@@ -1,0 +1,75 @@
+# rasuvaeff/yii3-outbox-clickhouse
+
+Domain-agnostic batched ClickHouse exporter for `rasuvaeff/yii3-outbox`.
+
+## Install
+
+```bash
+composer require rasuvaeff/yii3-outbox-clickhouse
+```
+
+Needs a PSR-18 client + PSR-17 factories (e.g. guzzlehttp/guzzle).
+
+## Rules
+
+- `ClickHouseOutboxExporter::export(?int $limit = null): ClickHouseExportResult`
+  reads pending messages, routes + groups by `(table, columns)`, one batched
+  insert per group.
+- Scopes the poll to `router->handledTypes()` via `findPending($types, $limit)` —
+  never competes with other consumers of the same outbox.
+- Route/decode errors (`ClickHouseRouteException`) are terminal → `markFailed`.
+  Transport errors (`ClickHouseWriteException`) are retryable → `save` (stays
+  Pending). `export()` never throws on a ClickHouse outage.
+- At-least-once: retries may insert a row twice. The router fills an `event_id`
+  column from `OutboxMessage::getId()`; make the table `ReplacingMergeTree ORDER
+  BY event_id` so duplicates collapse.
+- Stay domain-agnostic: no `Assignment`/`ab.*` in src; concrete types live in the
+  consumer package / examples.
+- Build the ClickHouse client via toolkit `ClickHouseClientFactory`; no direct
+  simpod dependency.
+- Does NOT bind `StorageInterface` (owned by the storage backend / app).
+
+## API
+
+```php
+use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExporter;
+use Rasuvaeff\Yii3OutboxClickHouse\DefaultClickHouseWriterFactory;
+use Rasuvaeff\Yii3OutboxClickHouse\MapClickHouseMessageRouter;
+use Rasuvaeff\Yii3Outbox\RetryPolicy;
+
+$exporter = new ClickHouseOutboxExporter(
+    storage: $storage,                 // yii3-outbox StorageInterface
+    router: new MapClickHouseMessageRouter(routes: [
+        'ab.exposure' => ['table' => 'ab_exposures', 'columns' => ['event_id', 'experiment', 'variant']],
+    ]),
+    retryPolicy: new RetryPolicy(maxAttempts: 5, delaySeconds: 30),
+    clock: $clock,
+    writerFactory: new DefaultClickHouseWriterFactory(clientFactory: $clickHouseClientFactory, batchSize: 1000),
+    // failureDecider: new DefaultFailureDecider(),
+    // fetchLimit: 1000,
+    // logger: $psrLogger,
+);
+
+$result = $exporter->export();
+$result->published; $result->retryScheduled; $result->terminalFailed; $result->skipped;
+$result->groups;            // list<ClickHouseExportGroupResult>
+$result->totalHandled(); $result->groupCount(); $result->hasFailures();
+```
+
+## Customization
+
+- `ClickHouseMessageRouterInterface::route(OutboxMessage): ClickHouseMessageRoute`,
+  `handledTypes(): list<string>` — implement for non-map routing.
+- `ClickHousePayloadDecoderInterface` (default `JsonPayloadDecoder`).
+- `FailureDeciderInterface` (default `DefaultFailureDecider`).
+- `ClickHouseWriterFactoryInterface` (default `DefaultClickHouseWriterFactory`).
+
+## DI / params
+
+```php
+'rasuvaeff/yii3-outbox-clickhouse' => [
+    'batchSize' => 1000, 'fetchLimit' => 1000, 'eventIdColumn' => 'event_id',
+    'routes' => ['ab.exposure' => ['table' => 'ab_exposures', 'columns' => ['event_id', 'experiment']]],
+    'retry' => ['maxAttempts' => 5, 'delaySeconds' => 30],
+],
+```

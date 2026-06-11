@@ -1,0 +1,101 @@
+{
+    "name": "rasuvaeff/yii3-outbox-clickhouse",
+    "description": "Batched ClickHouse exporter for the Yii3 outbox",
+    "license": "BSD-3-Clause",
+    "type": "library",
+    "keywords": [
+        "yii3",
+        "outbox",
+        "clickhouse",
+        "analytics",
+        "batch",
+        "exporter"
+    ],
+    "authors": [
+        {
+            "name": "Victor Razuvaev",
+            "email": "rasuvaeff@gmail.com"
+        }
+    ],
+    "homepage": "https://github.com/rasuvaeff/yii3-outbox-clickhouse",
+    "support": {
+        "issues": "https://github.com/rasuvaeff/yii3-outbox-clickhouse/issues",
+        "source": "https://github.com/rasuvaeff/yii3-outbox-clickhouse"
+    },
+    "require": {
+        "php": "8.3 - 8.5",
+        "ext-json": "*",
+        "psr/clock": "^1.0",
+        "psr/log": "^3.0",
+        "rasuvaeff/clickhouse-toolkit": "^1.1",
+        "rasuvaeff/yii3-outbox": "^1.0"
+    },
+    "require-dev": {
+        "ergebnis/composer-normalize": "^2.51",
+        "friendsofphp/php-cs-fixer": "^3.95",
+        "guzzlehttp/guzzle": "^7.9",
+        "infection/infection": "^0.29",
+        "maglnet/composer-require-checker": "^4.17",
+        "phpunit/phpunit": "^11.5",
+        "rector/rector": "^2.4",
+        "roave/backward-compatibility-check": "^8.0",
+        "vimeo/psalm": "^6.16",
+        "yiisoft/test-support": "^3.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Rasuvaeff\\Yii3OutboxClickHouse\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Rasuvaeff\\Yii3OutboxClickHouse\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "ergebnis/composer-normalize": true,
+            "infection/extension-installer": true
+        },
+        "platform": {
+            "ext-bcmath": "1.0.0",
+            "ext-intl": "1.0.0"
+        },
+        "sort-packages": true
+    },
+    "extra": {
+        "config-plugin": {
+            "di": "di.php",
+            "params": "params.php"
+        },
+        "config-plugin-options": {
+            "source-directory": "config"
+        }
+    },
+    "scripts": {
+        "bc-check": "roave-backward-compatibility-check",
+        "build": [
+            "@composer validate --strict",
+            "@composer normalize --dry-run",
+            "@require-checker",
+            "@cs",
+            "@psalm",
+            "@test"
+        ],
+        "cs": "php-cs-fixer fix --dry-run --diff --config=.php-cs-fixer.php",
+        "cs:fix": "php-cs-fixer fix --diff --config=.php-cs-fixer.php",
+        "mutation": "infection --threads=max",
+        "psalm": "psalm --no-cache",
+        "rector": "rector process --dry-run",
+        "rector:fix": "rector process",
+        "release-check": [
+            "@build",
+            "@rector",
+            "@bc-check"
+        ],
+        "require-checker": "composer-require-checker check composer.json",
+        "test": "phpunit",
+        "test:coverage": "phpunit --coverage-text --coverage-clover=build/coverage.xml",
+        "test:coverage:ci": "phpunit --coverage-clover=build/coverage.xml"
+    }
+}
