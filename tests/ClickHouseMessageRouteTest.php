@@ -20,6 +20,7 @@ final class ClickHouseMessageRouteTest extends TestCase
         $b = new ClickHouseMessageRoute(table: 't', columns: ['x', 'y'], row: ['x' => 3, 'y' => 4]);
         $c = new ClickHouseMessageRoute(table: 't', columns: ['y', 'x'], row: ['y' => 1, 'x' => 2]);
 
+        $this->assertSame("t\0x\0y", $a->groupKey());
         $this->assertSame($a->groupKey(), $b->groupKey());
         $this->assertNotSame($a->groupKey(), $c->groupKey());
     }

@@ -92,6 +92,61 @@ final class ClickHouseOutboxExportRunnerTest extends TestCase
         new ClickHouseOutboxExportRunner($this->exporter, idleSleepSeconds: -1);
     }
 
+    #[Test]
+    public function rejectsNegativeBusySleep(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+
+        new ClickHouseOutboxExportRunner($this->exporter, busySleepSeconds: -1);
+    }
+
+    #[Test]
+    public function allowsZeroSleep(): void
+    {
+        // 0 is valid (`< 0`, not `<= 0`): must not throw.
+        $runner = new ClickHouseOutboxExportRunner($this->exporter, idleSleepSeconds: 0, busySleepSeconds: 0);
+
+        $this->assertInstanceOf(ClickHouseOutboxExportRunner::class, $runner);
+    }
+
+    #[Test]
+    public function usesDefaultSleepIntervalsOfBusyOneIdleFive(): void
+    {
+        $this->seed('a');
+        $sleeps = [];
+
+        // Default constructor: busySleepSeconds = 1, idleSleepSeconds = 5.
+        (new ClickHouseOutboxExportRunner($this->exporter))->run(
+            static fn(int $iteration): bool => $iteration <= 2,
+            function (int $seconds) use (&$sleeps): void {
+                $sleeps[] = $seconds;
+            },
+        );
+
+        $this->assertSame([1, 5], $sleeps);
+    }
+
+    #[Test]
+    public function returnsZeroedResultWhenLoopNeverRuns(): void
+    {
+        $this->seed('a');
+        $sleeps = [];
+
+        $result = $this->runner()->run(
+            static fn(int $iteration): bool => false,
+            function (int $seconds) use (&$sleeps): void {
+                $sleeps[] = $seconds;
+            },
+        );
+
+        $this->assertSame([], $sleeps);
+        $this->assertSame(0, $result->published);
+        $this->assertSame(0, $result->retryScheduled);
+        $this->assertSame(0, $result->terminalFailed);
+        $this->assertSame(0, $result->skipped);
+        $this->assertSame(0, $result->groupCount());
+    }
+
     private function runner(int $idle = 5, int $busy = 1): ClickHouseOutboxExportRunner
     {
         return new ClickHouseOutboxExportRunner($this->exporter, idleSleepSeconds: $idle, busySleepSeconds: $busy);

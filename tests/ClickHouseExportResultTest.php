@@ -55,4 +55,20 @@ final class ClickHouseExportResultTest extends TestCase
         $this->assertSame(10, $result->totalHandled());
         $this->assertSame(0, $result->groupCount());
     }
+
+    #[Test]
+    public function hasFailuresWhenOnlyRetryScheduled(): void
+    {
+        $result = new ClickHouseExportResult(published: 0, retryScheduled: 1, terminalFailed: 0, skipped: 0, groups: []);
+
+        $this->assertTrue($result->hasFailures());
+    }
+
+    #[Test]
+    public function hasFailuresWhenOnlyTerminalFailed(): void
+    {
+        $result = new ClickHouseExportResult(published: 0, retryScheduled: 0, terminalFailed: 1, skipped: 0, groups: []);
+
+        $this->assertTrue($result->hasFailures());
+    }
 }
