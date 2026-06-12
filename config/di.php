@@ -8,6 +8,7 @@ use Rasuvaeff\Yii3Outbox\RetryPolicy;
 use Rasuvaeff\Yii3Outbox\StorageInterface;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseMessageRouterInterface;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExporter;
+use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExportRunner;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHousePayloadDecoderInterface;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseWriterFactoryInterface;
 use Rasuvaeff\Yii3OutboxClickHouse\DefaultClickHouseWriterFactory;
@@ -66,6 +67,18 @@ return [
             writerFactory: $writerFactory,
             failureDecider: $failureDecider,
             fetchLimit: (int) ($config['fetchLimit'] ?? 1000),
+        );
+    },
+
+    ClickHouseOutboxExportRunner::class => static function (
+        ClickHouseOutboxExporter $exporter,
+    ) use ($params): ClickHouseOutboxExportRunner {
+        $config = $params['rasuvaeff/yii3-outbox-clickhouse'] ?? [];
+
+        return new ClickHouseOutboxExportRunner(
+            exporter: $exporter,
+            idleSleepSeconds: (int) ($config['idleSleepSeconds'] ?? 5),
+            busySleepSeconds: (int) ($config['busySleepSeconds'] ?? 1),
         );
     },
 ];

@@ -56,6 +56,23 @@ $result->groups;            // list<ClickHouseExportGroupResult>
 $result->totalHandled(); $result->groupCount(); $result->hasFailures();
 ```
 
+## Worker
+
+```bash
+./yii outbox:clickhouse:export [--once] [--max-iterations=N]
+```
+
+`Console\ExportClickHouseOutboxCommand` (Symfony Console / yiisoft/yii-console) wraps
+`ClickHouseOutboxExportRunner` — a framework-agnostic loop:
+
+```php
+use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExportRunner;
+
+$runner = new ClickHouseOutboxExportRunner($exporter, idleSleepSeconds: 5, busySleepSeconds: 1);
+$runner->runOnce();                                    // one batch -> ClickHouseExportResult
+$runner->run($shouldContinue, $sleeper);               // loop; callables injected for testability
+```
+
 ## Customization
 
 - `ClickHouseMessageRouterInterface::route(OutboxMessage): ClickHouseMessageRoute`,

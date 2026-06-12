@@ -28,7 +28,8 @@
         "psr/clock": "^1.0",
         "psr/log": "^3.0",
         "rasuvaeff/clickhouse-toolkit": "^1.1",
-        "rasuvaeff/yii3-outbox": "^1.0"
+        "rasuvaeff/yii3-outbox": "^1.0",
+        "symfony/console": "^6.4 || ^7.0"
     },
     "require-dev": {
         "ergebnis/composer-normalize": "^2.51",

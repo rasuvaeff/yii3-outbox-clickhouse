@@ -26,6 +26,7 @@ request-scoped direct sink, see `rasuvaeff/yii3-ab-testing-clickhouse`.
 
 - PHP 8.3+
 - `rasuvaeff/yii3-outbox` ^1.0, `rasuvaeff/clickhouse-toolkit` ^1.1
+- `symfony/console` ^6.4 || ^7.0 (for the worker command)
 - A PSR-18 HTTP client + PSR-17 factories (e.g. `guzzlehttp/guzzle`)
 
 ## Installation
@@ -64,10 +65,30 @@ $exporter = new ClickHouseOutboxExporter(
     ),
 );
 
-while (true) {
-    $result = $exporter->export();
-    sleep($result->totalHandled() === 0 ? 5 : 1);
-}
+$result = $exporter->export();   // one batch
+```
+
+### Worker
+
+Run the loop with the bundled console command (registered for `yiisoft/yii-console`,
+also works in plain Symfony Console):
+
+```bash
+./yii outbox:clickhouse:export                 # run forever
+./yii outbox:clickhouse:export --once          # single batch (e.g. from cron)
+./yii outbox:clickhouse:export --max-iterations=100
+```
+
+Or drive the framework-agnostic `ClickHouseOutboxExportRunner` yourself:
+
+```php
+use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExportRunner;
+
+$runner = new ClickHouseOutboxExportRunner($exporter, idleSleepSeconds: 5, busySleepSeconds: 1);
+$runner->run(
+    static fn (int $iteration): bool => true,                 // stop condition
+    static fn (int $seconds): mixed => sleep($seconds),       // sleeper
+);
 ```
 
 ### Routing

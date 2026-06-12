@@ -16,7 +16,9 @@ Public API: `ClickHouseOutboxExporter`, `ClickHouseMessageRouterInterface` +
 `FailureDeciderInterface` + `DefaultFailureDecider`,
 `ClickHouseWriterFactoryInterface` + `DefaultClickHouseWriterFactory`,
 `ClickHouseExportResult` + `ClickHouseExportGroupResult`,
-`Exception\ClickHouseRouteException`.
+`Exception\ClickHouseRouteException`, `ClickHouseOutboxExportRunner` (worker loop)
++ `Console\ExportClickHouseOutboxCommand` (Symfony Console command
+`outbox:clickhouse:export`, needs `symfony/console`).
 
 ## Golden rules
 
