@@ -9,6 +9,7 @@ use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
+use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3Outbox\RetryPolicy;
 use Rasuvaeff\Yii3Outbox\StorageInterface;
 
@@ -50,7 +51,7 @@ final readonly class ClickHouseOutboxExporter
         $fetch = $limit ?? $this->fetchLimit;
         $now = $this->clock->now();
 
-        $messages = $this->storage->findPending($this->router->handledTypes(), $fetch);
+        $messages = $this->storage->claim($this->router->handledTypes(), $fetch);
 
         $published = 0;
         $retryScheduled = 0;
@@ -62,6 +63,7 @@ final readonly class ClickHouseOutboxExporter
 
         foreach ($messages as $message) {
             if (!$this->retryPolicy->isReadyForRetry($message, $now)) {
+                $this->storage->save($message->withStatus(OutboxStatus::Pending));
                 $skipped++;
 
                 continue;
@@ -180,7 +182,7 @@ final readonly class ClickHouseOutboxExporter
         if ($decision === FailureDecision::Terminal) {
             $this->storage->markFailed($message);
         } else {
-            $this->storage->save($message);
+            $this->storage->save($message->withStatus(OutboxStatus::Pending));
         }
 
         return $decision;
