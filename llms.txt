@@ -15,6 +15,9 @@ Needs a PSR-18 client + PSR-17 factories (e.g. guzzlehttp/guzzle).
 - `ClickHouseOutboxExporter::export(?int $limit = null): ClickHouseExportResult`
   reads pending messages, routes + groups by `(table, columns)`, one batched
   insert per group.
+- `ClickHouseOutboxExporter::exportOrFail(?int $limit = null): ClickHouseExportResult`
+  keeps the same batching logic but throws `Exception\ClickHouseExportException`
+  when the finished batch contains retryable or terminal failures.
 - Scopes the poll to `router->handledTypes()` via `findPending($types, $limit)` —
   never competes with other consumers of the same outbox.
 - Route/decode errors (`ClickHouseRouteException`) are terminal → `markFailed`.
@@ -54,6 +57,12 @@ $result = $exporter->export();
 $result->published; $result->retryScheduled; $result->terminalFailed; $result->skipped;
 $result->groups;            // list<ClickHouseExportGroupResult>
 $result->totalHandled(); $result->groupCount(); $result->hasFailures();
+
+try {
+    $exporter->exportOrFail();
+} catch (\Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseExportException $e) {
+    $failedResult = $e->getResult();
+}
 ```
 
 ## Worker

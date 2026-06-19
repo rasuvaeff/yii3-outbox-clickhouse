@@ -122,6 +122,8 @@ CREATE TABLE ab_exposures (
 
 `export()` never throws on a ClickHouse outage. `ClickHouseExportResult` reports
 `published` / `retryScheduled` / `terminalFailed` / `skipped` and per-group detail.
+If a caller wants a catchable domain exception, `exportOrFail()` wraps a failed
+batch in `Exception\ClickHouseExportException` and carries the result object.
 
 ### Yii3 DI
 
