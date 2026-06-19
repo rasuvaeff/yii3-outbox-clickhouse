@@ -12,6 +12,7 @@ use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3Outbox\RetryPolicy;
 use Rasuvaeff\Yii3Outbox\StorageInterface;
+use Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseExportException;
 
 /**
  * Reads pending outbox messages, routes and groups them by (table, columns), and
@@ -121,6 +122,20 @@ final readonly class ClickHouseOutboxExporter
             skipped: $skipped,
             groups: $groupResults,
         );
+    }
+
+    /**
+     * @throws ClickHouseExportException when the batch completes with one or more failed messages
+     */
+    public function exportOrFail(?int $limit = null): ClickHouseExportResult
+    {
+        $result = $this->export($limit);
+
+        if ($result->hasFailures()) {
+            throw ClickHouseExportException::fromResult($result);
+        }
+
+        return $result;
     }
 
     /**

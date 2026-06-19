@@ -18,6 +18,7 @@ use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3Outbox\RetryPolicy;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExporter;
 use Rasuvaeff\Yii3OutboxClickHouse\DefaultFailureDecider;
+use Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseExportException;
 use Rasuvaeff\Yii3OutboxClickHouse\FailureDeciderInterface;
 use Rasuvaeff\Yii3OutboxClickHouse\FailureDecision;
 use Rasuvaeff\Yii3OutboxClickHouse\MapClickHouseMessageRouter;
@@ -69,6 +70,17 @@ final class ClickHouseOutboxExporterTest extends TestCase
             ['event_id' => 'b', 'experiment' => 'y'],
         ], $factory->writers['ab_exposures']->rows);
         $this->assertSame([], $this->storage->findPending());
+    }
+
+    #[Test]
+    public function exportOrFailReturnsResultWhenBatchSucceeds(): void
+    {
+        $this->storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
+
+        $result = $this->exporter(new RecordingWriterFactory())->exportOrFail();
+
+        $this->assertSame(1, $result->published);
+        $this->assertFalse($result->hasFailures());
     }
 
     #[Test]
@@ -140,6 +152,25 @@ final class ClickHouseOutboxExporterTest extends TestCase
         $this->assertNotNull($message);
         $this->assertSame(OutboxStatus::Pending, $message->getStatus());
         $this->assertSame(1, $message->getAttempts());
+    }
+
+    #[Test]
+    public function exportOrFailThrowsWithResultWhenBatchHasFailures(): void
+    {
+        $this->storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
+        $factory = new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
+
+        try {
+            $this->exporter($factory)->exportOrFail();
+            self::fail('Expected ClickHouseExportException to be thrown');
+        } catch (ClickHouseExportException $e) {
+            $this->assertSame(1, $e->getResult()->retryScheduled);
+            $this->assertSame(0, $e->getResult()->terminalFailed);
+            $this->assertSame(
+                'ClickHouse export reported failures: 1 retry scheduled, 0 terminal failed',
+                $e->getMessage(),
+            );
+        }
     }
 
     #[Test]

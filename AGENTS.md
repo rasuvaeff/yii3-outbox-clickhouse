@@ -16,8 +16,8 @@ Public API: `ClickHouseOutboxExporter`, `ClickHouseMessageRouterInterface` +
 `FailureDeciderInterface` + `DefaultFailureDecider`,
 `ClickHouseWriterFactoryInterface` + `DefaultClickHouseWriterFactory`,
 `ClickHouseExportResult` + `ClickHouseExportGroupResult`,
-`Exception\ClickHouseRouteException`, `ClickHouseOutboxExportRunner` (worker loop)
-+ `Console\ExportClickHouseOutboxCommand` (Symfony Console command
+`Exception\ClickHouseRouteException` + `Exception\ClickHouseExportException`,
+`ClickHouseOutboxExportRunner` (worker loop) + `Console\ExportClickHouseOutboxCommand` (Symfony Console command
 `outbox:clickhouse:export`, needs `symfony/console`).
 
 ## Golden rules
@@ -68,7 +68,8 @@ docker run --rm -v "$REPO_ROOT":/repo -w /repo/yii3-outbox-clickhouse composer:2
   `FailureDecision` to all of them — no per-row acknowledgement.
 - Route/decode errors are **terminal** (`markFailed`); transport errors are
   **retryable** (`save`, stays `Pending`). `export()` never throws on a ClickHouse
-  outage.
+  outage. `exportOrFail()` is an opt-in strict wrapper that converts failed
+  batches into `Exception\ClickHouseExportException`.
 - The exporter scopes the poll to `router->handledTypes()` via
   `StorageInterface::findPending($types, $limit)`, so it never competes with a
   generic `Processor` or another exporter for foreign messages.
