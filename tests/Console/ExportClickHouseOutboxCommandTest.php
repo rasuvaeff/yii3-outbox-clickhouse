@@ -52,7 +52,7 @@ final class ExportClickHouseOutboxCommandTest extends TestCase
     {
         $this->seed(3);
 
-        $exit = $this->tester->execute(['--once' => true]);
+        $exit = $this->tester->execute(['--once' => true, '--max-iterations' => '3']);
 
         $this->assertSame(0, $exit);
         $this->assertStringContainsString('published=1', $this->tester->getDisplay());
@@ -68,6 +68,19 @@ final class ExportClickHouseOutboxCommandTest extends TestCase
 
         $this->assertSame(0, $exit);
         $this->assertCount(1, $this->storage->findPending());
+    }
+
+
+    #[Test]
+    public function maxIterationsOfOneRunsExactlyOneIteration(): void
+    {
+        $this->seed(3);
+
+        $exit = $this->tester->execute(['--max-iterations' => '1']);
+
+        $this->assertSame(0, $exit);
+        $this->assertCount(2, $this->storage->findPending());
+        $this->assertStringContainsString('published=1', $this->tester->getDisplay());
     }
 
     #[Test]

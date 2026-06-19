@@ -38,7 +38,14 @@ final class ExportClickHouseOutboxCommand extends Command
     #[\Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $maxIterations = $input->getOption('once') === true ? 1 : max(0, (int) $input->getOption('max-iterations'));
+        if ($input->getOption('once') === true) {
+            $result = $this->runner->runOnce();
+            $this->report($result, $output);
+
+            return Command::SUCCESS;
+        }
+
+        $maxIterations = max(0, (int) $input->getOption('max-iterations'));
 
         $result = $this->runner->run(
             static fn(int $iteration): bool => $maxIterations === 0 || $iteration <= $maxIterations,

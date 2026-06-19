@@ -70,6 +70,12 @@ final class ClickHouseOutboxExporterTest extends TestCase
             ['event_id' => 'b', 'experiment' => 'y'],
         ], $factory->writers['ab_exposures']->rows);
         $this->assertSame([], $this->storage->findPending());
+        $first = $this->storage->getById('a');
+        $second = $this->storage->getById('b');
+        $this->assertNotNull($first);
+        $this->assertNotNull($second);
+        $this->assertSame(OutboxStatus::Published, $first->getStatus());
+        $this->assertSame(OutboxStatus::Published, $second->getStatus());
     }
 
     #[Test]
@@ -303,7 +309,7 @@ final class ClickHouseOutboxExporterTest extends TestCase
     #[Test]
     public function accumulatesRetryAndTerminalAcrossGroups(): void
     {
-        // Two groups (two tables): exposures retry, conversions terminal-fail.
+        // Two groups (two tables): exposures terminal-fail first, conversions retry second.
         $this->storage->save($this->pending(id: 'exp', type: 'ab.exposure', payload: '{"experiment":"x"}'));
         $this->storage->save($this->pending(id: 'conv', type: 'ab.conversion', payload: '{"experiment":"x","goal":"buy"}'));
         $factory = new RecordingWriterFactory(failTables: [
@@ -314,7 +320,7 @@ final class ClickHouseOutboxExporterTest extends TestCase
             #[\Override]
             public function decide(OutboxMessage $message, \Throwable $e): FailureDecision
             {
-                return $message->getType() === 'ab.exposure' ? FailureDecision::Retryable : FailureDecision::Terminal;
+                return $message->getType() === 'ab.exposure' ? FailureDecision::Terminal : FailureDecision::Retryable;
             }
         };
 
@@ -323,6 +329,8 @@ final class ClickHouseOutboxExporterTest extends TestCase
         $this->assertSame(1, $result->retryScheduled);
         $this->assertSame(1, $result->terminalFailed);
         $this->assertSame(0, $result->published);
+        $this->assertSame(1, $result->groups[0]->terminalFailed);
+        $this->assertSame(0, $result->groups[1]->terminalFailed);
     }
 
     private function alwaysRetryable(): FailureDeciderInterface
