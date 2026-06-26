@@ -7,14 +7,7 @@
         "text": "php://stderr",
         "summary": "build/infection-summary.log"
     },
-    "phpUnit": {
-        "configDir": "."
-    },
-    // Achieved MSI is ~92%; 90 leaves margin. The remaining survivors are
-    // equivalent/timing/low-value: the console command's `getOption('once') === true`
-    // (redundant bool compare) and its unlimited `--max-iterations=0` branch (cannot
-    // be exercised without an intentional infinite loop), the `sleep($seconds)` /
-    // `$seconds > 0` timing guard, and default `int` params (fetchLimit, batchSize).
+    "testFramework": "testo",
     "minMsi": 90,
     "mutators": {
         "@default": true

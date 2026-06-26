@@ -56,6 +56,21 @@ docker run --rm -v "$REPO_ROOT":/repo -w /repo/yii3-outbox-clickhouse composer:2
 `repositories` block. GitHub CI is red until core is on Packagist — expected.
 `composer.lock` is gitignored (library).
 
+Or with Make:
+
+```bash
+make build
+make cs-fix
+make psalm
+make test
+make test-coverage
+make mutation
+make release-check
+```
+
+`make test-coverage` and `make mutation` bootstrap `pcov` inside the
+`composer:2` container because the base image has no coverage driver.
+
 ## Invariants & gotchas
 
 - **At-least-once + ClickHouse = duplicates.** A retry after a partial failure

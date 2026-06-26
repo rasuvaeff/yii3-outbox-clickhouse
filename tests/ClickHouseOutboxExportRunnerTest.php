@@ -5,9 +5,6 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3OutboxClickHouse\Tests;
 
 use InvalidArgumentException;
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Psr\Clock\ClockInterface;
 use Rasuvaeff\Yii3Outbox\InMemoryStorage;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
@@ -17,20 +14,30 @@ use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExporter;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExportRunner;
 use Rasuvaeff\Yii3OutboxClickHouse\MapClickHouseMessageRouter;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\RecordingWriterFactory;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Expect;
+use Testo\Lifecycle\BeforeTest;
+use Testo\Test;
 
-#[CoversClass(ClickHouseOutboxExportRunner::class)]
-final class ClickHouseOutboxExportRunnerTest extends TestCase
+#[Test]
+#[Covers(ClickHouseOutboxExportRunner::class)]
+final class ClickHouseOutboxExportRunnerTest
 {
     private InMemoryStorage $storage;
 
     private ClickHouseOutboxExporter $exporter;
 
-    #[\Override]
-    protected function setUp(): void
+    #[BeforeTest]
+    public function setUp(): void
     {
         $this->storage = new InMemoryStorage();
-        $clock = $this->createStub(ClockInterface::class);
-        $clock->method('now')->willReturn(new \DateTimeImmutable('2026-06-11 12:10:00'));
+        $clock = new class implements ClockInterface {
+            public function now(): \DateTimeImmutable
+            {
+                return new \DateTimeImmutable('2026-06-11 12:10:00');
+            }
+        };
 
         $this->exporter = new ClickHouseOutboxExporter(
             storage: $this->storage,
@@ -41,23 +48,21 @@ final class ClickHouseOutboxExportRunnerTest extends TestCase
         );
     }
 
-    #[Test]
     public function runOnceExportsASingleBatch(): void
     {
         $this->seed('a');
 
         $result = $this->runner()->runOnce();
 
-        $this->assertSame(1, $result->published);
+        Assert::same($result->published, 1);
     }
 
-    #[Test]
     public function runStopsWhenShouldContinueReturnsFalse(): void
     {
         $lastIteration = 0;
 
         $this->runner()->run(
-            function (int $iteration) use (&$lastIteration): bool {
+            static function (int $iteration) use (&$lastIteration): bool {
                 $lastIteration = $iteration;
 
                 return $iteration <= 3;
@@ -65,10 +70,9 @@ final class ClickHouseOutboxExportRunnerTest extends TestCase
             static fn(int $seconds): null => null,
         );
 
-        $this->assertSame(4, $lastIteration);
+        Assert::same($lastIteration, 4);
     }
 
-    #[Test]
     public function sleepsBusyThenIdle(): void
     {
         $this->seed('a');
@@ -81,41 +85,35 @@ final class ClickHouseOutboxExportRunnerTest extends TestCase
             },
         );
 
-        $this->assertSame([1, 5], $sleeps);
+        Assert::same($sleeps, [1, 5]);
     }
 
-    #[Test]
     public function rejectsNegativeSleep(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        Expect::exception(InvalidArgumentException::class);
 
         new ClickHouseOutboxExportRunner($this->exporter, idleSleepSeconds: -1);
     }
 
-    #[Test]
     public function rejectsNegativeBusySleep(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        Expect::exception(InvalidArgumentException::class);
 
         new ClickHouseOutboxExportRunner($this->exporter, busySleepSeconds: -1);
     }
 
-    #[Test]
     public function allowsZeroSleep(): void
     {
-        // 0 is valid (`< 0`, not `<= 0`): must not throw.
         $runner = new ClickHouseOutboxExportRunner($this->exporter, idleSleepSeconds: 0, busySleepSeconds: 0);
 
-        $this->assertInstanceOf(ClickHouseOutboxExportRunner::class, $runner);
+        Assert::instanceOf($runner, ClickHouseOutboxExportRunner::class);
     }
 
-    #[Test]
     public function usesDefaultSleepIntervalsOfBusyOneIdleFive(): void
     {
         $this->seed('a');
         $sleeps = [];
 
-        // Default constructor: busySleepSeconds = 1, idleSleepSeconds = 5.
         (new ClickHouseOutboxExportRunner($this->exporter))->run(
             static fn(int $iteration): bool => $iteration <= 2,
             function (int $seconds) use (&$sleeps): void {
@@ -123,10 +121,9 @@ final class ClickHouseOutboxExportRunnerTest extends TestCase
             },
         );
 
-        $this->assertSame([1, 5], $sleeps);
+        Assert::same($sleeps, [1, 5]);
     }
 
-    #[Test]
     public function returnsZeroedResultWhenLoopNeverRuns(): void
     {
         $this->seed('a');
@@ -139,12 +136,12 @@ final class ClickHouseOutboxExportRunnerTest extends TestCase
             },
         );
 
-        $this->assertSame([], $sleeps);
-        $this->assertSame(0, $result->published);
-        $this->assertSame(0, $result->retryScheduled);
-        $this->assertSame(0, $result->terminalFailed);
-        $this->assertSame(0, $result->skipped);
-        $this->assertSame(0, $result->groupCount());
+        Assert::same($sleeps, []);
+        Assert::same($result->published, 0);
+        Assert::same($result->retryScheduled, 0);
+        Assert::same($result->terminalFailed, 0);
+        Assert::same($result->skipped, 0);
+        Assert::same($result->groupCount(), 0);
     }
 
     private function runner(int $idle = 5, int $busy = 1): ClickHouseOutboxExportRunner

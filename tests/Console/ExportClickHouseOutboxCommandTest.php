@@ -4,9 +4,6 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3OutboxClickHouse\Tests\Console;
 
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Psr\Clock\ClockInterface;
 use Rasuvaeff\Yii3Outbox\InMemoryStorage;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
@@ -18,23 +15,30 @@ use Rasuvaeff\Yii3OutboxClickHouse\Console\ExportClickHouseOutboxCommand;
 use Rasuvaeff\Yii3OutboxClickHouse\MapClickHouseMessageRouter;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\RecordingWriterFactory;
 use Symfony\Component\Console\Tester\CommandTester;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Lifecycle\BeforeTest;
+use Testo\Test;
 
-#[CoversClass(ExportClickHouseOutboxCommand::class)]
-final class ExportClickHouseOutboxCommandTest extends TestCase
+#[Test]
+#[Covers(ExportClickHouseOutboxCommand::class)]
+final class ExportClickHouseOutboxCommandTest
 {
     private InMemoryStorage $storage;
 
     private CommandTester $tester;
 
-    #[\Override]
-    protected function setUp(): void
+    #[BeforeTest]
+    public function setUp(): void
     {
         $this->storage = new InMemoryStorage();
-        $clock = $this->createStub(ClockInterface::class);
-        $clock->method('now')->willReturn(new \DateTimeImmutable('2026-06-11 12:10:00'));
+        $clock = new class implements ClockInterface {
+            public function now(): \DateTimeImmutable
+            {
+                return new \DateTimeImmutable('2026-06-11 12:10:00');
+            }
+        };
 
-        // fetchLimit 1: each iteration publishes exactly one message, so the number
-        // of published messages reveals how many iterations ran.
         $exporter = new ClickHouseOutboxExporter(
             storage: $this->storage,
             router: new MapClickHouseMessageRouter(routes: ['ab.exposure' => ['table' => 't', 'columns' => ['event_id', 'experiment']]]),
@@ -47,49 +51,44 @@ final class ExportClickHouseOutboxCommandTest extends TestCase
         $this->tester = new CommandTester(new ExportClickHouseOutboxCommand(new ClickHouseOutboxExportRunner($exporter, idleSleepSeconds: 0, busySleepSeconds: 0)));
     }
 
-    #[Test]
     public function onceRunsExactlyOneIteration(): void
     {
         $this->seed(3);
 
         $exit = $this->tester->execute(['--once' => true, '--max-iterations' => '3']);
 
-        $this->assertSame(0, $exit);
-        $this->assertStringContainsString('published=1', $this->tester->getDisplay());
-        $this->assertCount(2, $this->storage->findPending());
+        Assert::same($exit, 0);
+        Assert::true(str_contains($this->tester->getDisplay(), 'published=1'));
+        Assert::count($this->storage->findPending(), 2);
     }
 
-    #[Test]
     public function maxIterationsRunsExactlyThatMany(): void
     {
         $this->seed(3);
 
         $exit = $this->tester->execute(['--max-iterations' => '2']);
 
-        $this->assertSame(0, $exit);
-        $this->assertCount(1, $this->storage->findPending());
+        Assert::same($exit, 0);
+        Assert::count($this->storage->findPending(), 1);
     }
 
-
-    #[Test]
     public function maxIterationsOfOneRunsExactlyOneIteration(): void
     {
         $this->seed(3);
 
         $exit = $this->tester->execute(['--max-iterations' => '1']);
 
-        $this->assertSame(0, $exit);
-        $this->assertCount(2, $this->storage->findPending());
-        $this->assertStringContainsString('published=1', $this->tester->getDisplay());
+        Assert::same($exit, 0);
+        Assert::count($this->storage->findPending(), 2);
+        Assert::true(str_contains($this->tester->getDisplay(), 'published=1'));
     }
 
-    #[Test]
     public function reportsZeroOnEmptyStorage(): void
     {
         $exit = $this->tester->execute(['--once' => true]);
 
-        $this->assertSame(0, $exit);
-        $this->assertStringContainsString('published=0', $this->tester->getDisplay());
+        Assert::same($exit, 0);
+        Assert::true(str_contains($this->tester->getDisplay(), 'published=0'));
     }
 
     private function seed(int $count): void

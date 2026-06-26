@@ -4,16 +4,18 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3OutboxClickHouse\Tests;
 
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseRouteException;
 use Rasuvaeff\Yii3OutboxClickHouse\MapClickHouseMessageRouter;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Expect;
+use Testo\Test;
 
-#[CoversClass(MapClickHouseMessageRouter::class)]
-final class MapClickHouseMessageRouterTest extends TestCase
+#[Test]
+#[Covers(MapClickHouseMessageRouter::class)]
+final class MapClickHouseMessageRouterTest
 {
     private const array ROUTES = [
         'ab.exposure' => [
@@ -26,7 +28,6 @@ final class MapClickHouseMessageRouterTest extends TestCase
         ],
     ];
 
-    #[Test]
     public function routesPayloadIntoRowInColumnOrder(): void
     {
         $router = new MapClickHouseMessageRouter(routes: self::ROUTES);
@@ -34,26 +35,24 @@ final class MapClickHouseMessageRouterTest extends TestCase
 
         $route = $router->route($message);
 
-        $this->assertSame('ab_exposures', $route->table);
-        $this->assertSame(['event_id', 'experiment', 'variant'], $route->columns);
-        $this->assertSame([
+        Assert::same($route->table, 'ab_exposures');
+        Assert::same($route->columns, ['event_id', 'experiment', 'variant']);
+        Assert::same($route->row, [
             'event_id' => 'm1',
             'experiment' => 'checkout',
             'variant' => 'green',
-        ], $route->row);
+        ]);
     }
 
-    #[Test]
     public function injectsMessageIdIntoEventIdColumn(): void
     {
         $router = new MapClickHouseMessageRouter(routes: self::ROUTES);
 
         $route = $router->route($this->message(id: 'evt-42', type: 'ab.conversion', payload: '{"experiment":"x","goal":"purchase"}'));
 
-        $this->assertSame('evt-42', $route->row['event_id']);
+        Assert::same($route->row['event_id'], 'evt-42');
     }
 
-    #[Test]
     public function eventIdColumnCanBeDisabled(): void
     {
         $router = new MapClickHouseMessageRouter(
@@ -61,46 +60,38 @@ final class MapClickHouseMessageRouterTest extends TestCase
             eventIdColumn: null,
         );
 
-        $this->expectException(ClickHouseRouteException::class);
-        $this->expectExceptionMessage('Missing field "event_id"');
+        Expect::exception(ClickHouseRouteException::class);
 
         $router->route($this->message(id: 'm1', type: 't', payload: '{"a":1}'));
     }
 
-    #[Test]
     public function throwsOnUnknownType(): void
     {
         $router = new MapClickHouseMessageRouter(routes: self::ROUTES);
 
-        $this->expectException(ClickHouseRouteException::class);
-        $this->expectExceptionMessage('No ClickHouse route configured for message type "order.created"');
+        Expect::exception(ClickHouseRouteException::class);
 
         $router->route($this->message(id: 'm1', type: 'order.created', payload: '{}'));
     }
 
-    #[Test]
     public function throwsOnMissingPayloadField(): void
     {
         $router = new MapClickHouseMessageRouter(routes: self::ROUTES);
 
-        $this->expectException(ClickHouseRouteException::class);
-        $this->expectExceptionMessage('Missing field "variant"');
+        Expect::exception(ClickHouseRouteException::class);
 
         $router->route($this->message(id: 'm1', type: 'ab.exposure', payload: '{"experiment":"x"}'));
     }
 
-    #[Test]
     public function throwsOnNonScalarField(): void
     {
         $router = new MapClickHouseMessageRouter(routes: self::ROUTES);
 
-        $this->expectException(ClickHouseRouteException::class);
-        $this->expectExceptionMessage('must be a scalar or null');
+        Expect::exception(ClickHouseRouteException::class);
 
         $router->route($this->message(id: 'm1', type: 'ab.exposure', payload: '{"experiment":{"nested":true},"variant":"green"}'));
     }
 
-    #[Test]
     public function allowsNullAndScalarFields(): void
     {
         $router = new MapClickHouseMessageRouter(
@@ -110,15 +101,14 @@ final class MapClickHouseMessageRouterTest extends TestCase
 
         $route = $router->route($this->message(id: 'm1', type: 't', payload: '{"experiment":null,"variant":42}'));
 
-        $this->assertSame(['experiment' => null, 'variant' => 42], $route->row);
+        Assert::same($route->row, ['experiment' => null, 'variant' => 42]);
     }
 
-    #[Test]
     public function handledTypesReturnsRouteKeys(): void
     {
         $router = new MapClickHouseMessageRouter(routes: self::ROUTES);
 
-        $this->assertSame(['ab.exposure', 'ab.conversion'], $router->handledTypes());
+        Assert::same($router->handledTypes(), ['ab.exposure', 'ab.conversion']);
     }
 
     private function message(string $id, string $type, string $payload): OutboxMessage

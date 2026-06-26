@@ -5,38 +5,37 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3OutboxClickHouse\Tests;
 
 use InvalidArgumentException;
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseMessageRoute;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Expect;
+use Testo\Test;
 
-#[CoversClass(ClickHouseMessageRoute::class)]
-final class ClickHouseMessageRouteTest extends TestCase
+#[Test]
+#[Covers(ClickHouseMessageRoute::class)]
+final class ClickHouseMessageRouteTest
 {
-    #[Test]
     public function groupKeyCombinesTableAndColumns(): void
     {
         $a = new ClickHouseMessageRoute(table: 't', columns: ['x', 'y'], row: ['x' => 1, 'y' => 2]);
         $b = new ClickHouseMessageRoute(table: 't', columns: ['x', 'y'], row: ['x' => 3, 'y' => 4]);
         $c = new ClickHouseMessageRoute(table: 't', columns: ['y', 'x'], row: ['y' => 1, 'x' => 2]);
 
-        $this->assertSame("t\0x\0y", $a->groupKey());
-        $this->assertSame($a->groupKey(), $b->groupKey());
-        $this->assertNotSame($a->groupKey(), $c->groupKey());
+        Assert::same($a->groupKey(), "t\0x\0y");
+        Assert::same($b->groupKey(), $a->groupKey());
+        Assert::notSame($c->groupKey(), $a->groupKey());
     }
 
-    #[Test]
     public function throwsOnEmptyTable(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        Expect::exception(InvalidArgumentException::class);
 
         new ClickHouseMessageRoute(table: '', columns: ['x'], row: []);
     }
 
-    #[Test]
     public function throwsOnEmptyColumns(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        Expect::exception(InvalidArgumentException::class);
 
         new ClickHouseMessageRoute(table: 't', columns: [], row: []);
     }
