@@ -2,18 +2,18 @@
 
 declare(strict_types=1);
 
-namespace Rasuvaeff\Yii3OutboxClickHouse\Tests\Exception;
+namespace Rasuvaeff\Yii3OutboxClickHouse\Tests;
 
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseExportResult;
 use Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseExportException;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Test;
 
-#[CoversClass(ClickHouseExportException::class)]
-final class ClickHouseExportExceptionTest extends TestCase
+#[Test]
+#[Covers(ClickHouseExportException::class)]
+final class ClickHouseExportExceptionTest
 {
-    #[Test]
     public function exposesFailedExportResult(): void
     {
         $result = new ClickHouseExportResult(
@@ -26,10 +26,10 @@ final class ClickHouseExportExceptionTest extends TestCase
 
         $exception = ClickHouseExportException::fromResult($result);
 
-        $this->assertSame($result, $exception->getResult());
-        $this->assertSame(
-            'ClickHouse export reported failures: 2 retry scheduled, 1 terminal failed',
+        Assert::same($exception->getResult(), $result);
+        Assert::same(
             $exception->getMessage(),
+            'ClickHouse export reported failures: 2 retry scheduled, 1 terminal failed',
         );
     }
 }

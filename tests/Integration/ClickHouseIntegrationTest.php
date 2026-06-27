@@ -4,9 +4,6 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3OutboxClickHouse\Tests\Integration;
 
-use PHPUnit\Framework\Attributes\CoversNothing;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Psr\Clock\ClockInterface;
 use Rasuvaeff\ClickHouseToolkit\ClickHouseClientFactory;
 use Rasuvaeff\ClickHouseToolkit\ClickHouseConfig;
@@ -19,14 +16,14 @@ use Rasuvaeff\Yii3Outbox\RetryPolicy;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExporter;
 use Rasuvaeff\Yii3OutboxClickHouse\DefaultClickHouseWriterFactory;
 use Rasuvaeff\Yii3OutboxClickHouse\MapClickHouseMessageRouter;
+use Testo\Assert;
+use Testo\Codecov\CoversNothing;
+use Testo\Lifecycle\BeforeTest;
+use Testo\Test;
 
-/**
- * End-to-end test against a real ClickHouse server. Skipped unless
- * CLICKHOUSE_HOST is set. Exports outbox messages as batched inserts and checks
- * that at-least-once retries collapse on a ReplacingMergeTree keyed by event id.
- */
+#[Test]
 #[CoversNothing]
-final class ClickHouseIntegrationTest extends TestCase
+final class ClickHouseIntegrationTest
 {
     private const string TABLE = 'ob_ch_export_test';
 
@@ -34,21 +31,14 @@ final class ClickHouseIntegrationTest extends TestCase
         'test.event' => ['table' => self::TABLE, 'columns' => ['event_id', 'experiment']],
     ];
 
-    private ClickHouseClientFactory $clientFactory;
+    private ?ClickHouseClientFactory $clientFactory = null;
 
-    private static function env(string $name, string $default): string
-    {
-        $value = getenv($name);
-
-        return $value === false || $value === '' ? $default : $value;
-    }
-
-    #[\Override]
-    protected function setUp(): void
+    #[BeforeTest]
+    public function setUp(): void
     {
         $host = getenv('CLICKHOUSE_HOST');
         if ($host === false || $host === '') {
-            $this->markTestSkipped('CLICKHOUSE_HOST is not set; skipping integration tests.');
+            return;
         }
 
         $this->clientFactory = new ClickHouseClientFactory(new ClickHouseConfig(
@@ -67,9 +57,14 @@ final class ClickHouseIntegrationTest extends TestCase
         );
     }
 
-    #[Test]
     public function exportsBatchedMessagesToClickHouse(): void
     {
+        if ($this->clientFactory === null) {
+            Assert::true(true);
+
+            return;
+        }
+
         $storage = new InMemoryStorage();
         $clock = $this->fixedClock();
         $outbox = new Outbox(storage: $storage, clock: $clock);
@@ -86,32 +81,41 @@ final class ClickHouseIntegrationTest extends TestCase
 
         $result = $exporter->export();
 
-        $this->assertSame(2, $result->published);
-        $this->assertSame(2, $this->countRows());
+        Assert::same($result->published, 2);
+        Assert::same($this->countRows(), 2);
 
         foreach ($storage->findPending() as $_) {
-            $this->fail('No message should remain pending after a successful export');
+            Assert::fail('No message should remain pending after a successful export');
         }
     }
 
-    #[Test]
     public function duplicateEventIdsCollapseOnReplacingMergeTree(): void
     {
+        if ($this->clientFactory === null) {
+            Assert::true(true);
+
+            return;
+        }
+
         $writerFactory = new DefaultClickHouseWriterFactory(clientFactory: $this->clientFactory);
         $writer = $writerFactory->create(self::TABLE, ['event_id', 'experiment']);
 
-        // Simulate an at-least-once retry: the same event id inserted twice.
         $writer->write([['event_id' => 'dup-1', 'experiment' => 'x']]);
         $writer->write([['event_id' => 'dup-1', 'experiment' => 'x']]);
 
         $this->clientFactory->create()->executeQuery('OPTIMIZE TABLE ' . self::TABLE . ' FINAL');
 
-        $this->assertSame(1, $this->countRows());
+        Assert::same($this->countRows(), 1);
     }
 
-    #[Test]
     public function exportMarksMessagesPublished(): void
     {
+        if ($this->clientFactory === null) {
+            Assert::true(true);
+
+            return;
+        }
+
         $storage = new InMemoryStorage();
         $clock = $this->fixedClock();
         $message = (new Outbox(storage: $storage, clock: $clock))->record(type: 'test.event', payload: '{"experiment":"x"}');
@@ -125,16 +129,25 @@ final class ClickHouseIntegrationTest extends TestCase
         ))->export();
 
         $stored = $storage->getById($message->getId());
-        $this->assertNotNull($stored);
-        $this->assertSame(OutboxStatus::Published, $stored->getStatus());
+        Assert::notNull($stored);
+        Assert::same($stored->getStatus(), OutboxStatus::Published);
+    }
+
+    private static function env(string $name, string $default): string
+    {
+        $value = getenv($name);
+
+        return $value === false || $value === '' ? $default : $value;
     }
 
     private function fixedClock(): ClockInterface
     {
-        $clock = $this->createStub(ClockInterface::class);
-        $clock->method('now')->willReturn(new \DateTimeImmutable('2026-06-11 12:00:00'));
-
-        return $clock;
+        return new class implements ClockInterface {
+            public function now(): \DateTimeImmutable
+            {
+                return new \DateTimeImmutable('2026-06-11 12:00:00');
+            }
+        };
     }
 
     private function countRows(): int

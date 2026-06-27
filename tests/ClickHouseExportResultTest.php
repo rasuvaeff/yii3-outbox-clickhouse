@@ -4,17 +4,17 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3OutboxClickHouse\Tests;
 
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseExportGroupResult;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseExportResult;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Test;
 
-#[CoversClass(ClickHouseExportResult::class)]
-#[CoversClass(ClickHouseExportGroupResult::class)]
-final class ClickHouseExportResultTest extends TestCase
+#[Test]
+#[Covers(ClickHouseExportResult::class)]
+#[Covers(ClickHouseExportGroupResult::class)]
+final class ClickHouseExportResultTest
 {
-    #[Test]
     public function aggregatesCounters(): void
     {
         $group = new ClickHouseExportGroupResult(
@@ -34,13 +34,12 @@ final class ClickHouseExportResultTest extends TestCase
             groups: [$group],
         );
 
-        $this->assertSame(6, $result->totalHandled());
-        $this->assertSame(1, $result->groupCount());
-        $this->assertTrue($result->hasFailures());
-        $this->assertSame('ab_exposures', $result->groups[0]->table);
+        Assert::same($result->totalHandled(), 6);
+        Assert::same($result->groupCount(), 1);
+        Assert::true($result->hasFailures());
+        Assert::same($result->groups[0]->table, 'ab_exposures');
     }
 
-    #[Test]
     public function reportsNoFailuresWhenClean(): void
     {
         $result = new ClickHouseExportResult(
@@ -51,24 +50,22 @@ final class ClickHouseExportResultTest extends TestCase
             groups: [],
         );
 
-        $this->assertFalse($result->hasFailures());
-        $this->assertSame(10, $result->totalHandled());
-        $this->assertSame(0, $result->groupCount());
+        Assert::false($result->hasFailures());
+        Assert::same($result->totalHandled(), 10);
+        Assert::same($result->groupCount(), 0);
     }
 
-    #[Test]
     public function hasFailuresWhenOnlyRetryScheduled(): void
     {
         $result = new ClickHouseExportResult(published: 0, retryScheduled: 1, terminalFailed: 0, skipped: 0, groups: []);
 
-        $this->assertTrue($result->hasFailures());
+        Assert::true($result->hasFailures());
     }
 
-    #[Test]
     public function hasFailuresWhenOnlyTerminalFailed(): void
     {
         $result = new ClickHouseExportResult(published: 0, retryScheduled: 0, terminalFailed: 1, skipped: 0, groups: []);
 
-        $this->assertTrue($result->hasFailures());
+        Assert::true($result->hasFailures());
     }
 }

@@ -4,53 +4,52 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3OutboxClickHouse\Tests;
 
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Rasuvaeff\ClickHouseToolkit\ClickHouseWriteException;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3OutboxClickHouse\DefaultFailureDecider;
 use Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseRouteException;
 use Rasuvaeff\Yii3OutboxClickHouse\FailureDecision;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Lifecycle\BeforeTest;
+use Testo\Test;
 
-#[CoversClass(DefaultFailureDecider::class)]
-final class DefaultFailureDeciderTest extends TestCase
+#[Test]
+#[Covers(DefaultFailureDecider::class)]
+final class DefaultFailureDeciderTest
 {
     private DefaultFailureDecider $decider;
 
     private OutboxMessage $message;
 
-    #[\Override]
-    protected function setUp(): void
+    #[BeforeTest]
+    public function setUp(): void
     {
         $this->decider = new DefaultFailureDecider();
         $this->message = OutboxMessage::create(type: 'ab.exposure', payload: '{}', createdAt: new \DateTimeImmutable('2026-06-11 12:00:00'));
     }
 
-    #[Test]
     public function routeFailureIsTerminal(): void
     {
-        $this->assertSame(
-            FailureDecision::Terminal,
+        Assert::same(
             $this->decider->decide($this->message, new ClickHouseRouteException('bad')),
+            FailureDecision::Terminal,
         );
     }
 
-    #[Test]
     public function writeFailureIsRetryable(): void
     {
-        $this->assertSame(
-            FailureDecision::Retryable,
+        Assert::same(
             $this->decider->decide($this->message, new ClickHouseWriteException('down')),
+            FailureDecision::Retryable,
         );
     }
 
-    #[Test]
     public function unknownErrorIsRetryable(): void
     {
-        $this->assertSame(
-            FailureDecision::Retryable,
+        Assert::same(
             $this->decider->decide($this->message, new \RuntimeException('boom')),
+            FailureDecision::Retryable,
         );
     }
 }
