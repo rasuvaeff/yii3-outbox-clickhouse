@@ -6,6 +6,7 @@
 [![Static analysis](https://github.com/rasuvaeff/yii3-outbox-clickhouse/actions/workflows/static-analysis.yml/badge.svg)](https://github.com/rasuvaeff/yii3-outbox-clickhouse/actions)
 [![Psalm Level](https://shepherd.dev/github/rasuvaeff/yii3-outbox-clickhouse/level.svg)](https://shepherd.dev/github/rasuvaeff/yii3-outbox-clickhouse)
 [![License](https://poser.pugx.org/rasuvaeff/yii3-outbox-clickhouse/license)](https://packagist.org/packages/rasuvaeff/yii3-outbox-clickhouse)
+[Русская версия](README.ru.md)
 
 Batched ClickHouse exporter for [`rasuvaeff/yii3-outbox`](https://github.com/rasuvaeff/yii3-outbox).
 A worker drains the outbox and writes large batched inserts to ClickHouse, so the
