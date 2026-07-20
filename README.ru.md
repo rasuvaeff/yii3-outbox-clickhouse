@@ -1,34 +1,48 @@
 # rasuvaeff/yii3-outbox-clickhouse
+
 [![Stable Version](https://poser.pugx.org/rasuvaeff/yii3-outbox-clickhouse/v/stable)](https://packagist.org/packages/rasuvaeff/yii3-outbox-clickhouse)
 [![Total Downloads](https://poser.pugx.org/rasuvaeff/yii3-outbox-clickhouse/downloads)](https://packagist.org/packages/rasuvaeff/yii3-outbox-clickhouse)
 [![Build](https://github.com/rasuvaeff/yii3-outbox-clickhouse/actions/workflows/build.yml/badge.svg)](https://github.com/rasuvaeff/yii3-outbox-clickhouse/actions)
 [![Static analysis](https://github.com/rasuvaeff/yii3-outbox-clickhouse/actions/workflows/static-analysis.yml/badge.svg)](https://github.com/rasuvaeff/yii3-outbox-clickhouse/actions)
 [![Psalm Level](https://shepherd.dev/github/rasuvaeff/yii3-outbox-clickhouse/level.svg)](https://shepherd.dev/github/rasuvaeff/yii3-outbox-clickhouse)
 [![License](https://poser.pugx.org/rasuvaeff/yii3-outbox-clickhouse/license)](https://packagist.org/packages/rasuvaeff/yii3-outbox-clickhouse)
-Batched ClickHouse exporter for [`rasuvaeff/yii3-outbox`](https://github.com/rasuvaeff/yii3-outbox).
-Рабочий очищает исходящие сообщения и записывает большие пакетные вставки в ClickHouse, поэтому путь запроса
- остается быстрым и надежным, а сбои в работе ClickHouse компенсируются механизмом повторных попыток отправки исходящих сообщений
-. **Независимость от домена** — повторно используйте его для A/B-аналитики, аудита журналов
-, событий продукта и всего, что доступно только для добавления.
+[English version](README.md)
 
- > Используете помощника по программированию с искусственным интеллектом? [llms.txt](llms.txt) содержит компактную ссылку на API, которую вы можете использовать. @@ЛИНИЯ@@
-## Почему бы не написать в ClickHouse из запроса?
-При очистке каждого запроса на каждый запрос создается одна небольшая вставка — ClickHouse ненавидит множество мелких вставок
-, а сбой ClickHouse прерывает запрос. Вместо этого этот пакет
- группирует **по** запросы из надежного исходящего ящика и повторяет попытку в случае сбоя. Информацию о прямом приемнике
- на уровне запроса см. в `rasuvaeff/yii3-ab-testing-clickhouse`. @@ЛИНИЯ@@
+Пакетный экспортёр в ClickHouse для
+[`rasuvaeff/yii3-outbox`](https://github.com/rasuvaeff/yii3-outbox). Воркер
+вычитывает outbox и делает крупные пакетные вставки в ClickHouse, поэтому путь
+запроса остаётся быстрым и надёжным, а сбои ClickHouse поглощаются механизмами
+retry'а outbox'а. **Domain-агностичен** — переиспользуйте его для A/B-аналитики,
+аудит-логов, продуктовых событий и любых append-only данных.
+
+> Используете AI-ассистента? В [llms.txt](llms.txt) — компактный API-справочник,
+> которым можно поделиться с моделью.
+
+## Почему не писать в ClickHouse из запроса?
+
+Сброс на каждый запрос порождает одну маленькую вставку на запрос — ClickHouse
+плохо переносит множество мелких вставок, а авария ClickHouse ломает сам запрос.
+Этот пакет вместо этого батчит **между** запросами из долговечного outbox и
+повторяет попытки при сбоях. Для request-scoped прямого sink'а см.
+`rasuvaeff/yii3-ab-testing-clickhouse`.
+
 ## Требования
+
 - PHP 8.3+
- - `rasuvaeff/yii3-outbox` ^1.0, `rasuvaeff/clickhouse-toolkit` ^1.1
- - `symfony/console` ^6.4 || ^7.0 (для рабочей команды)
- — HTTP-клиент PSR-18 + фабрики PSR-17 (например, `guzzlehttp/guzzle`)
+- `rasuvaeff/yii3-outbox` ^1.0, `rasuvaeff/clickhouse-toolkit` ^1.1
+- `symfony/console` ^6.4 || ^7.0 (для команды воркера)
+- PSR-18 HTTP-клиент + PSR-17 фабрики (например `guzzlehttp/guzzle`)
 
 ## Установка
+
 ```bash
 composer require rasuvaeff/yii3-outbox-clickhouse
 ```
+
 ## Использование
-### Рабочий
+
+### Воркер
+
 ```php
 use Rasuvaeff\ClickHouseToolkit\ClickHouseClientFactory;
 use Rasuvaeff\ClickHouseToolkit\ClickHouseConfig;
@@ -57,16 +71,19 @@ $exporter = new ClickHouseOutboxExporter(
 
 $result = $exporter->export();   // one batch
 ```
-### Рабочий
-Запустите цикл с помощью встроенной консольной команды (зарегистрированной для `yiisoft/yii-console`,
- также работает в простой консоли Symfony):
+
+### Запуск воркера
+
+Запустите цикл через встроенную console-команду (зарегистрированную для
+`yiisoft/yii-console`, также работает в чистой Symfony Console):
 
 ```bash
 ./yii outbox:clickhouse:export                 # run forever
 ./yii outbox:clickhouse:export --once          # single batch (e.g. from cron)
 ./yii outbox:clickhouse:export --max-iterations=100
 ```
-Или управляйте независимым от платформы ClickHouseOutboxExportRunner самостоятельно:
+
+Или управляйте framework-агностичным `ClickHouseOutboxExportRunner` сами:
 
 ```php
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExportRunner;
@@ -77,14 +94,19 @@ $runner->run(
     static fn (int $seconds): mixed => sleep($seconds),       // sleeper
 );
 ```
+
 ### Маршрутизация
-`MapClickHouseMessageRouter` отображает `type => [table, columns]`. Каждая строка строится
- из декодированных полезных данных JSON в порядке столбцов; настроенный столбец `event_id`
- (имя по умолчанию `event_id`) заполняется из идентификатора сообщения, а не из полезных данных. @@ЛИНИЯ@@
-### Идемпотентность (хотя бы один раз)
-Доставка в исходящие осуществляется как минимум один раз: при повторной попытке после частичного сбоя строка
- может быть вставлена ​​дважды. Сделайте целевую таблицу ReplacingMergeTree, упорядоченной по идентификатору события, чтобы дубликаты
- сворачивались при слиянии:
+
+`MapClickHouseMessageRouter` отображает `type => [table, columns]`. Каждая строка
+строится из декодированного JSON-payload'а в порядке колонок; настроенная колонка
+`event_id` (имя по умолчанию `event_id`) заполняется из id сообщения, а не из
+payload'а.
+
+### Идемпотентность (at-least-once)
+
+Доставка outbox — at-least-once: retry после частичной неудачи может вставить
+строку дважды. Сделайте целевую таблицу `ReplacingMergeTree`, упорядоченной по id
+события, чтобы дубликаты схлопывались при merge:
 
 ```sql
 CREATE TABLE ab_exposures (
@@ -95,20 +117,25 @@ CREATE TABLE ab_exposures (
     ts         DateTime DEFAULT now()
 ) ENGINE = ReplacingMergeTree ORDER BY event_id;
 ```
-### Семантика отказа
-| Неудача | Решение | Эффект |
- |---|---|---|
- | Неизвестный тип/неверная полезная нагрузка/отсутствующее поле (`ClickHouseRouteException`) | терминал | `markFailed` |
- | ClickHouse отключен/ошибка транспорта (`ClickHouseWriteException`) | повторный | `сохранить`, остается в режиме ожидания, повторная попытка согласно `RetryPolicy` |
 
- `export()` никогда не вызывает сбой в работе ClickHouse. ClickHouseExportResult сообщает
- `published`/`retryScheduled`/`terminalFailed`/`skiped` и подробную информацию по каждой группе.
- Если вызывающему объекту требуется перехватываемое доменное исключение, `exportOrFail()` оборачивает неудачный пакет
- в `Exception\ClickHouseExportException` и переносит объект результата. @@ЛИНИЯ@@
-### Yii3 ДИ
-`config/di.php` связывает экспортер, маршрутизатор, декодер, средство решения ошибок и фабрику записи
-. Он **не** связывает `StorageInterface` — который принадлежит серверу хранилища
- (`yii3-outbox-db`) или приложению. Настройте маршруты в параметрах:
+### Семантика сбоев
+
+| Сбой | Решение | Эффект |
+|---|---|---|
+| Неизвестный тип / некорректный payload / отсутствие поля (`ClickHouseRouteException`) | терминальный | `markFailed` |
+| ClickHouse недоступен / транспортная ошибка (`ClickHouseWriteException`) | повторяемый | `save`, остаётся `Pending`, ретраится по `RetryPolicy` |
+
+`export()` никогда не бросает исключения при аварии ClickHouse.
+`ClickHouseExportResult` сообщает `published` / `retryScheduled` /
+`terminalFailed` / `skipped` и подробности по каждой группе. Если вызывающему
+нужно ловимое доменное исключение — `exportOrFail()` оборачивает неудачный батч в
+`Exception\ClickHouseExportException` и несёт в себе объект результата.
+
+### Yii3 DI
+
+`config/di.php` биндит экспортёр, роутер, декодер, failure-decider и фабрику
+writer'ов. Он **не** биндит `StorageInterface` — им владеет storage-backend
+(`yii3-outbox-db`) или приложение. Конфигурируйте маршруты в params:
 
 ```php
 // config/params.php
@@ -120,19 +147,28 @@ CREATE TABLE ab_exposures (
     'retry' => ['maxAttempts' => 5, 'delaySeconds' => 30],
 ],
 ```
+
 ## Безопасность
-- Идентификаторы и значения таблиц/столбцов проходят через `clickhouse-toolkit`
- (параметризованные вставки, проверка идентификатора).
- — полезные данные могут содержать персональные данные; сохранение является обязанностью
- разработчика таблицы/схемы.
- — учетные данные ClickHouse хранятся в ClickHouseConfig, а не в полезных нагрузках. @@ЛИНИЯ@@
+
+- Идентификаторы таблиц/колонок и значения проходят через `clickhouse-toolkit`
+  (параметризованные вставки, валидация идентификаторов).
+- Payload'ы могут содержать PII; их удержание — ответственность дизайнера
+  таблицы/схемы.
+- Учётные данные ClickHouse хранятся в `ClickHouseConfig`, никогда в payload'ах.
+
 ## Примеры
-См. [`examples/`](examples/). @@ЛИНИЯ@@
+
+См. [`examples/`](examples/).
+
 ## Разработка
+
 ```bash
 make build
 ```
-Ядро `yii3-outbox` используется через репозиторий путей, пока оно не опубликовано — см.
- [AGENTS.md](AGENTS.md) для вызова Docker в монорепо-корне. @@ЛИНИЯ@@
+
+Ядро `yii3-outbox` пока не опубликовано и подключается через path-репозиторий —
+см. [AGENTS.md](AGENTS.md) про запуск Docker с корнем монорепо.
+
 ## Лицензия
-BSD-3-пункт. См. [LICENSE.md](LICENSE.md).
+
+BSD-3-Clause. См. [LICENSE.md](LICENSE.md).
