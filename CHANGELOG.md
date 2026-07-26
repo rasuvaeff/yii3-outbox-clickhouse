@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.2.0 — 2026-07-26
+
+- Raise the `rasuvaeff/clickhouse-toolkit` floor from `^1.1` to `^1.6`.
+  `Identifier` validation anchored its whitelists with `$` until v1.5.1, and in
+  PCRE `$` also matches immediately before a trailing newline — so an identifier
+  ending in `\n` passed validation. `^1.1` still resolved to a fixed version for
+  a fresh install, but permitted the vulnerable v1.1.0–v1.4.0 for anyone with an
+  older lock file, and the CI `prefer-lowest` job installed exactly those.
+  `yii3-ab-testing-clickhouse` and `yii3-clickhouse-toolkit` were already on
+  `^1.6`; this aligns the family.
+
+  Minor rather than patch: raising a dependency floor can affect resolution for
+  an application pinned to an older `clickhouse-toolkit`.
+
 ## 1.1.2 — 2026-07-26
 
 - Add `/benchmarks` and `/Makefile` to `.gitattributes` export-ignore.
