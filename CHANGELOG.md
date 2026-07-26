@@ -1,13 +1,20 @@
 # Changelog
 
-## 1.1.1 — 2026-06-30
-
-- Add `/benchmarks` and `/Makefile` to `.gitattributes` export-ignore.
-
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## Unreleased
+
+- Add `/benchmarks` and `/Makefile` to `.gitattributes` export-ignore.
+  Previously filed under a second `## 1.1.1 — 2026-06-30` heading; v1.1.1 was
+  tagged on 2026-06-27 and never contained this change.
+- Docs: the exporter polls via `claim()`, not `findPending()`. `llms.txt` and the
+  `ClickHouseMessageRouterInterface::handledTypes()` PHPDoc still named the
+  non-atomic method, and the claim "never competes with other consumers" was
+  stated without its actual precondition — disjoint `handledTypes()` across
+  consumers, since `claim()` hands a message to exactly one caller.
 
 ## 1.1.1 — 2026-06-27
 
