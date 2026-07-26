@@ -27,7 +27,7 @@
         "ext-json": "*",
         "psr/clock": "^1.0",
         "psr/log": "^3.0",
-        "rasuvaeff/clickhouse-toolkit": "^1.1",
+        "rasuvaeff/clickhouse-toolkit": "^1.6",
         "rasuvaeff/yii3-outbox": "^1.0",
         "symfony/console": "^6.4 || ^7.0"
     },
