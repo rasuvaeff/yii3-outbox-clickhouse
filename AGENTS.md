@@ -96,7 +96,7 @@ make release-check
 
 ## When you finish
 
-- Update `README.md` (and `examples/` if usage changed); update `CHANGELOG.md`
-  when releasing.
+- Update `README.md` **and `README.ru.md`** (both languages, same commit; and
+  `examples/` if usage changed); update `CHANGELOG.md` when releasing.
 - Re-run `composer build` (monorepo-root mount). For a real ClickHouse run, start
   a server and set `CLICKHOUSE_HOST`. Paste the output.
