@@ -16,6 +16,8 @@ use Testo\Test;
 
 #[Test]
 #[Covers(DefaultFailureDecider::class)]
+#[Covers(ClickHouseRouteException::class)]
+#[Covers(FailureDecision::class)]
 final class DefaultFailureDeciderTest
 {
     private DefaultFailureDecider $decider;
