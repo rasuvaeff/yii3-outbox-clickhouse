@@ -34,7 +34,8 @@ final class JsonPayloadDecoderTest
 
     public function throwsOnInvalidJson(): void
     {
-        Expect::exception(ClickHouseRouteException::class);
+        Expect::exception(ClickHouseRouteException::class)
+            ->withPrevious(\JsonException::class);
 
         $this->decoder->decode($this->message('{not json'));
     }
