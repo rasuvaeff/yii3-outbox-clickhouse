@@ -50,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   narrow change filter for the mutation job, and a cached property regression
   corpus.
 - Raise the Infection gate from `minMsi` 90 to 95 (the suite scores 96.5%).
+- Raise the `yiisoft/test-support` dev floor to `^3.1` — `ConfigWiringTest` uses
+  `StaticClock`, which 3.0 does not ship (the `prefer-lowest` CI job caught it).
 
 ## 1.2.0 — 2026-07-26
 
