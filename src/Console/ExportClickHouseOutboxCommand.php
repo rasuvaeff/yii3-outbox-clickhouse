@@ -17,6 +17,10 @@ use Symfony\Component\Console\Output\OutputInterface;
  * single batch (e.g. from cron) or `--max-iterations` to bound the loop. Works in
  * any Symfony Console / `yiisoft/yii-console` application.
  *
+ * `--max-iterations` accepts non-negative integers only, `0` meaning unlimited.
+ * Anything else exits with {@see Command::INVALID} rather than being coerced —
+ * a coerced `-5` used to mean "run forever".
+ *
  * @api
  */
 #[AsCommand(name: 'outbox:clickhouse:export', description: 'Export pending outbox messages to ClickHouse in batches')]
@@ -45,7 +49,15 @@ final class ExportClickHouseOutboxCommand extends Command
             return Command::SUCCESS;
         }
 
-        $maxIterations = max(0, (int) $input->getOption('max-iterations'));
+        $maxIterationsOption = $input->getOption('max-iterations');
+
+        if (!is_string($maxIterationsOption) || preg_match('/^\d+\z/', $maxIterationsOption) !== 1) {
+            $output->writeln('<error>--max-iterations must be a non-negative integer (0 = unlimited)</error>');
+
+            return Command::INVALID;
+        }
+
+        $maxIterations = (int) $maxIterationsOption;
 
         $result = $this->runner->run(
             static fn(int $iteration): bool => $maxIterations === 0 || $iteration <= $maxIterations,

@@ -8,6 +8,10 @@ use InvalidArgumentException;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use Rasuvaeff\ClickHouseToolkit\ClickHouseWriteException;
+use Rasuvaeff\PropertyTesting\ArbitraryInterface;
+use Rasuvaeff\PropertyTesting\Classify;
+use Rasuvaeff\PropertyTesting\Gen;
+use Rasuvaeff\PropertyTesting\Property;
 use Rasuvaeff\Yii3Outbox\InMemoryStorage;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
@@ -19,6 +23,7 @@ use Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseExportException;
 use Rasuvaeff\Yii3OutboxClickHouse\FailureDeciderInterface;
 use Rasuvaeff\Yii3OutboxClickHouse\FailureDecision;
 use Rasuvaeff\Yii3OutboxClickHouse\MapClickHouseMessageRouter;
+use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\RecordingLogger;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\RecordingWriterFactory;
 use Testo\Assert;
 use Testo\Codecov\Covers;
@@ -386,6 +391,244 @@ final class ClickHouseOutboxExporterTest
                 return FailureDecision::Terminal;
             }
         };
+    }
+
+    public function exhaustedAttemptsAreTerminatedInsteadOfSkipped(): void
+    {
+        // attempts == maxAttempts: not ready for retry, and never will be. The
+        // old code saved it back as Pending on every single run.
+        $this->storage->save($this->pending(
+            id: 'a',
+            type: 'ab.exposure',
+            payload: '{"experiment":"x"}',
+            attempts: 3,
+            lastAttemptAt: new \DateTimeImmutable('2026-06-11 12:00:00'),
+        ));
+        $factory = new RecordingWriterFactory();
+
+        $result = $this->exporter($factory)->export();
+
+        Assert::same($result->terminalFailed, 1);
+        Assert::same($result->skipped, 0);
+        Assert::same($factory->created, []);
+        $message = $this->storage->getById('a');
+        Assert::notNull($message);
+        Assert::same($message->getStatus(), OutboxStatus::Failed);
+        Assert::same($message->getAttempts(), 3);
+    }
+
+    public function retryableWriteFailureOnTheLastAttemptTerminates(): void
+    {
+        // attempts 2 of 3: this run spends the last one, so the retryable
+        // verdict from the decider must be capped into a terminal one.
+        $this->storage->save($this->pending(
+            id: 'a',
+            type: 'ab.exposure',
+            payload: '{"experiment":"x"}',
+            attempts: 2,
+            lastAttemptAt: new \DateTimeImmutable('2026-06-11 12:00:00'),
+        ));
+        $factory = new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
+
+        $result = $this->exporter($factory)->export();
+
+        Assert::same($result->terminalFailed, 1);
+        Assert::same($result->retryScheduled, 0);
+        Assert::true($result->hasTerminalFailures());
+        $message = $this->storage->getById('a');
+        Assert::notNull($message);
+        Assert::same($message->getStatus(), OutboxStatus::Failed);
+        Assert::same($message->getAttempts(), 3);
+    }
+
+    public function retryableRouteFailureOnTheLastAttemptTerminates(): void
+    {
+        $this->storage->save($this->pending(
+            id: 'a',
+            type: 'ab.exposure',
+            payload: '{}',
+            attempts: 2,
+            lastAttemptAt: new \DateTimeImmutable('2026-06-11 12:00:00'),
+        ));
+        $factory = new RecordingWriterFactory();
+
+        $result = $this->exporter($factory, decider: $this->alwaysRetryable())->export();
+
+        Assert::same($result->terminalFailed, 1);
+        Assert::same($result->retryScheduled, 0);
+        $message = $this->storage->getById('a');
+        Assert::notNull($message);
+        Assert::same($message->getStatus(), OutboxStatus::Failed);
+    }
+
+    public function logsRetryExhaustionWithContext(): void
+    {
+        $logger = new RecordingLogger();
+
+        $this->storage->save($this->pending(
+            id: 'a',
+            type: 'ab.exposure',
+            payload: '{"experiment":"x"}',
+            attempts: 3,
+            lastAttemptAt: new \DateTimeImmutable('2026-06-11 12:00:00'),
+        ));
+
+        $this->exporter(new RecordingWriterFactory(), logger: $logger)->export();
+
+        Assert::count($logger->records, 1);
+        Assert::same($logger->records[0]['message'], 'ClickHouse outbox message exhausted its retries');
+        Assert::same($logger->records[0]['context'], [
+            'messageId' => 'a',
+            'type' => 'ab.exposure',
+            'attempts' => 3,
+        ]);
+    }
+
+    public function logsRetryExhaustionCausedByAWriteFailureWithTheError(): void
+    {
+        $logger = new RecordingLogger();
+
+        $this->storage->save($this->pending(
+            id: 'a',
+            type: 'ab.exposure',
+            payload: '{"experiment":"x"}',
+            attempts: 2,
+            lastAttemptAt: new \DateTimeImmutable('2026-06-11 12:00:00'),
+        ));
+        $factory = new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
+
+        $this->exporter($factory, logger: $logger)->export();
+
+        $exhaustion = array_values(array_filter(
+            $logger->records,
+            static fn(array $record): bool => $record['message'] === 'ClickHouse outbox message exhausted its retries',
+        ));
+
+        Assert::count($exhaustion, 1);
+        Assert::same($exhaustion[0]['context'], [
+            'messageId' => 'a',
+            'type' => 'ab.exposure',
+            'attempts' => 3,
+            'error' => 'down',
+        ]);
+    }
+
+    /**
+     * The invariant the exporter exists to keep: after a run, a message is
+     * either published, waiting for a retry it can still make, or Failed.
+     * "Pending with no attempts left" is the zombie state that made a
+     * ClickHouse outage longer than maxAttempts x delaySeconds strand the whole
+     * backlog invisibly — a single-scenario test cannot cover the product of
+     * attempt counts, due times, routability and writer outcomes.
+     *
+     * @param list<array{type: string, routable: bool, attempts: int, dueOffset: int}> $specs
+     */
+    #[Property(runs: 200, timeoutMs: 5000)]
+    public function everyRunLeavesEachMessagePublishedRetryableOrFailed(array $specs, string $writerBehaviour): void
+    {
+        $this->storage = new InMemoryStorage();
+
+        $handledCount = 0;
+
+        foreach ($specs as $index => $spec) {
+            if ($spec['type'] === 'ab.exposure') {
+                $handledCount++;
+            }
+
+            $this->storage->save($this->pending(
+                id: 'm' . $index,
+                type: $spec['type'],
+                payload: $spec['routable'] ? '{"experiment":"x"}' : '{}',
+                attempts: $spec['attempts'],
+                lastAttemptAt: $spec['attempts'] === 0
+                    ? null
+                    : (new \DateTimeImmutable(self::NOW))->modify('-' . $spec['dueOffset'] . ' seconds'),
+            ));
+        }
+
+        $factory = $writerBehaviour === 'transient'
+            ? new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('down')])
+            : new RecordingWriterFactory();
+
+        $result = $this->exporter($factory)->export();
+
+        // Each outcome must actually occur across the random phase, or the
+        // invariant below is only checked on the paths that happen to be cheap
+        // to generate. Measured over 400 runs: published 21%, retry 18%,
+        // terminal 74%, skipped 30%.
+        Classify::cover($result->published > 0, 'published something', 5.0);
+        Classify::cover($result->retryScheduled > 0, 'scheduled a retry', 5.0);
+        Classify::cover($result->terminalFailed > 0, 'terminated something', 20.0);
+        Classify::cover($result->skipped > 0, 'skipped something', 10.0);
+        Classify::when($specs === [], 'empty batch');
+
+        Assert::same(
+            $result->published + $result->retryScheduled + $result->terminalFailed + $result->skipped,
+            $handledCount,
+        );
+
+        foreach ($specs as $index => $spec) {
+            $message = $this->storage->getById('m' . $index);
+            Assert::notNull($message);
+
+            // Claimed rows are never left mid-flight.
+            Assert::true($message->getStatus() !== OutboxStatus::Processing);
+
+            if ($spec['type'] !== 'ab.exposure') {
+                // Foreign types are out of this exporter's scope: never
+                // claimed, so status and attempts are untouched — including a
+                // foreign message that has itself run out of attempts, which is
+                // its own consumer's business.
+                Assert::same($message->getStatus(), OutboxStatus::Pending);
+                Assert::same($message->getAttempts(), $spec['attempts']);
+
+                continue;
+            }
+
+            // The zombie state: Pending with nothing left to spend. Such a
+            // message would be re-claimed and skipped on every run forever.
+            if ($message->getStatus() === OutboxStatus::Pending) {
+                Assert::true($message->getAttempts() < 3);
+            }
+        }
+    }
+
+    /** @return array<string, ArbitraryInterface> */
+    public static function everyRunLeavesEachMessagePublishedRetryableOrFailedGenerators(): array
+    {
+        return [
+            'specs' => Gen::arrayOf(
+                Gen::record([
+                    // One handled type and one nobody routes: the second must
+                    // never be claimed, let alone failed.
+                    'type' => Gen::elements(['ab.exposure', 'other.type']),
+                    'routable' => Gen::bool(),
+                    'attempts' => Gen::intBetween(0, 4),
+                    // delaySeconds is 30, so 0 and 10 are "not due yet".
+                    'dueOffset' => Gen::elements([0, 10, 45, 90]),
+                ]),
+                maxSize: 6,
+            ),
+            'writerBehaviour' => Gen::elements(['ok', 'transient']),
+        ];
+    }
+
+    /** @return iterable<string, array{list<array{type: string, routable: bool, attempts: int, dueOffset: int}>, string}> */
+    public static function everyRunLeavesEachMessagePublishedRetryableOrFailedExamples(): iterable
+    {
+        yield 'exhausted message with a healthy writer' => [
+            [['type' => 'ab.exposure', 'routable' => true, 'attempts' => 3, 'dueOffset' => 90]],
+            'ok',
+        ];
+        yield 'last attempt spent by a ClickHouse outage' => [
+            [['type' => 'ab.exposure', 'routable' => true, 'attempts' => 2, 'dueOffset' => 90]],
+            'transient',
+        ];
+        yield 'foreign type is never claimed' => [
+            [['type' => 'other.type', 'routable' => true, 'attempts' => 0, 'dueOffset' => 0]],
+            'transient',
+        ];
+        yield 'empty outbox' => [[], 'ok'];
     }
 
     private function exporter(

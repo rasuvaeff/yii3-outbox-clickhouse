@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3OutboxClickHouse;
 
+use InvalidArgumentException;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseRouteException;
 
@@ -17,6 +18,12 @@ use Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseRouteException;
  * `ReplacingMergeTree` ORDER BY at that column makes at-least-once retries
  * idempotent — duplicate inserts collapse on merge.
  *
+ * The map must not be empty. An empty map handles no type, but an empty
+ * {@see self::handledTypes()} means "claim every type" to the storage, so the
+ * exporter would claim the whole outbox and terminally fail every message for
+ * having no route — including messages belonging to other consumers. The
+ * constructor rejects it instead.
+ *
  * @api
  */
 final readonly class MapClickHouseMessageRouter implements ClickHouseMessageRouterInterface
@@ -29,7 +36,15 @@ final readonly class MapClickHouseMessageRouter implements ClickHouseMessageRout
         private array $routes,
         private ClickHousePayloadDecoderInterface $decoder = new JsonPayloadDecoder(),
         private ?string $eventIdColumn = 'event_id',
-    ) {}
+    ) {
+        if ($routes === []) {
+            throw new InvalidArgumentException(
+                'ClickHouse route map must not be empty: handledTypes() would return no types, '
+                . 'the exporter would claim every message in the outbox — including those meant for '
+                . 'other consumers — and terminally fail each one for having no route',
+            );
+        }
+    }
 
     #[\Override]
     public function route(OutboxMessage $message): ClickHouseMessageRoute

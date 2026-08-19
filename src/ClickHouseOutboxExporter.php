@@ -24,7 +24,9 @@ use Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseExportException;
  * {@see FailureDeciderInterface}: a group's write either publishes every message
  * or applies one decision to all of them (no per-row acknowledgement). ClickHouse
  * being unavailable never throws out of `export()` — those messages stay
- * `Pending` and retry later. At-least-once delivery means retries may insert a
+ * `Pending` and retry later, until {@see RetryPolicy::shouldRetry()} runs out of
+ * attempts, at which point they are marked `Failed` no matter what the decider
+ * said. At-least-once delivery means retries may insert a
  * row twice; pair the target table with `ReplacingMergeTree` keyed on the routed
  * event id (see {@see MapClickHouseMessageRouter}).
  *
@@ -63,6 +65,23 @@ final readonly class ClickHouseOutboxExporter
         $groups = [];
 
         foreach ($messages as $message) {
+            // A claimed message whose attempts are already spent has nowhere to
+            // go but Failed. Saving it back as Pending — which is what a plain
+            // isReadyForRetry() check does — makes it circle claim -> skip ->
+            // save forever, invisible to any alert watching Failed.
+            if (!$this->retryPolicy->shouldRetry($message)) {
+                $this->logger->warning('ClickHouse outbox message exhausted its retries', [
+                    'messageId' => $message->getId(),
+                    'type' => $message->getType(),
+                    'attempts' => $message->getAttempts(),
+                ]);
+
+                $this->storage->markFailed($message);
+                $terminalFailed++;
+
+                continue;
+            }
+
             if (!$this->retryPolicy->isReadyForRetry($message, $now)) {
                 $this->storage->save($message->withStatus(OutboxStatus::Pending));
                 $skipped++;
@@ -190,9 +209,26 @@ final readonly class ClickHouseOutboxExporter
         }
     }
 
+    /**
+     * Applies the decider's verdict, with the retry policy as the ceiling: a
+     * retryable failure on a message that has no attempts left is terminal.
+     * Without that the message would be saved as Pending with attempts already
+     * at the maximum and never be retried nor terminated again.
+     */
     private function persistFailure(OutboxMessage $message, \Throwable $e): FailureDecision
     {
         $decision = $this->failureDecider->decide($message, $e);
+
+        if ($decision === FailureDecision::Retryable && !$this->retryPolicy->shouldRetry($message)) {
+            $this->logger->warning('ClickHouse outbox message exhausted its retries', [
+                'messageId' => $message->getId(),
+                'type' => $message->getType(),
+                'attempts' => $message->getAttempts(),
+                'error' => $e->getMessage(),
+            ]);
+
+            $decision = FailureDecision::Terminal;
+        }
 
         if ($decision === FailureDecision::Terminal) {
             $this->storage->markFailed($message);
