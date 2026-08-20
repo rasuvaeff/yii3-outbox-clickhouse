@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 1.3.0 — 2026-08-20
 
 ### Fixed
 
@@ -53,7 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Development tooling: `rasuvaeff/rector-named-literals` in the rector set, a
   narrow change filter for the mutation job, and a cached property regression
   corpus.
-- Raise the Infection gate from `minMsi` 90 to 95 (the suite scores 96.5%).
+- Raise the Infection gate from `minMsi` 90 to 95 (the suite scores 97.2%).
 - Raise the `yiisoft/test-support` dev floor to `^3.1` — `ConfigWiringTest` uses
   `StaticClock`, which 3.0 does not ship (the `prefer-lowest` CI job caught it).
 
