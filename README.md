@@ -150,6 +150,27 @@ they stay unpublished without counting as a failure. Check
 `ClickHouseExportResult::hasTerminalFailures()` instead when only unrecoverable
 messages should page someone.
 
+### Messages in backoff are not claimed
+
+When the injected storage implements `Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface`
+— `rasuvaeff/yii3-outbox-db` 2.2.0 does — the exporter claims through
+`claimReady()`, and a message whose retry delay has not elapsed is never taken
+from the table. Before, every `Pending` row of the routed types was claimed and
+the not-yet-due ones were written straight back: two writes per backing-off
+message per run, each occupying a slot in `fetchLimit` that a ready message
+could have used, so export latency grew with the size of the retry queue.
+
+A storage without the interface keeps working: the exporter falls back to
+`claim()` and filters in PHP, exactly as before.
+
+The consequence to know before alerting on it: `ClickHouseExportResult::$skipped`
+reads `0` against a retry-aware storage, because the messages it counted are no
+longer claimed. It was never queue depth — it was wasted effort, and there is
+none left. Count `Pending` rows with a recent `last_attempt_at` if you want to
+know how many are waiting.
+
+Requires `rasuvaeff/yii3-outbox` ^1.5.
+
 ### Yii3 DI
 
 `config/di.php` binds the exporter, router, decoder, failure decider and writer

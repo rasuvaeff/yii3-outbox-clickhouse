@@ -10,6 +10,7 @@ use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
+use Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface;
 use Rasuvaeff\Yii3Outbox\RetryPolicy;
 use Rasuvaeff\Yii3Outbox\StorageInterface;
 use Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseExportException;
@@ -54,7 +55,7 @@ final readonly class ClickHouseOutboxExporter
         $fetch = $limit ?? $this->fetchLimit;
         $now = $this->clock->now();
 
-        $messages = $this->storage->claim($this->router->handledTypes(), $fetch);
+        $messages = $this->claimBatch($now, $fetch);
 
         $published = 0;
         $retryScheduled = 0;
@@ -155,6 +156,32 @@ final readonly class ClickHouseOutboxExporter
         }
 
         return $result;
+    }
+
+    /**
+     * Claims a batch, letting the storage apply the retry policy itself when it
+     * can.
+     *
+     * The `isReadyForRetry()` check in `export()` stays either way. A plain
+     * {@see StorageInterface} has no way to honour the predicate, and one that
+     * does may still hand back more than asked — time moves between the query
+     * and the loop. The pushdown removes work; it is not what makes the result
+     * correct.
+     *
+     * @return list<OutboxMessage>
+     */
+    private function claimBatch(\DateTimeImmutable $now, int $fetch): array
+    {
+        if ($this->storage instanceof RetryAwareStorageInterface) {
+            return $this->storage->claimReady(
+                readyThreshold: $this->retryPolicy->readyThreshold($now),
+                maxAttempts: $this->retryPolicy->getMaxAttempts(),
+                types: $this->router->handledTypes(),
+                limit: $fetch,
+            );
+        }
+
+        return $this->storage->claim($this->router->handledTypes(), $fetch);
     }
 
     /**

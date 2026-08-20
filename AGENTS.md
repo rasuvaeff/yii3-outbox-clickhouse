@@ -73,6 +73,19 @@ make release-check
 
 ## Invariants & gotchas
 
+- **The exporter claims through `claimReady()` when it can.** If the injected
+  storage implements `Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface`, a
+  message still waiting out its backoff is never claimed — no write-back, no
+  slot consumed in `fetchLimit`. The `isReadyForRetry()` check in the loop is
+  still required and must not be removed as "dead": a plain `StorageInterface`
+  cannot honour the predicate, and even a retry-aware one may return a message
+  that has drifted, since time moves between the query and the loop.
+- **`ClickHouseExportResult::$skipped` is `0` against a retry-aware storage.**
+  It counts messages the run claimed and then discarded, and the pushdown means
+  there are none. A test asserting a non-zero `skipped` is asserting the
+  fallback path and must use `Tests\Double\PlainStorage` — `InMemoryStorage`
+  implements `RetryAwareStorageInterface` as of `rasuvaeff/yii3-outbox` 1.5.0,
+  so using it directly silently exercises the other branch.
 - **At-least-once + ClickHouse = duplicates.** A retry after a partial failure
   re-inserts rows. The router fills the configured `event_id` column from
   `OutboxMessage::getId()`; the target table must be `ReplacingMergeTree` ordered

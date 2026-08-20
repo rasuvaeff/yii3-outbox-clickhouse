@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `ClickHouseOutboxExporter` claims through `claimReady()` when the injected
+  storage implements `RetryAwareStorageInterface` (`rasuvaeff/yii3-outbox`
+  1.5.0; implemented by `rasuvaeff/yii3-outbox-db` 2.2.0), so a message whose
+  retry delay has not elapsed is never taken from the table
+  ([#21](https://github.com/rasuvaeff/yii3-outbox-clickhouse/issues/21)).
+
+  Every `Pending` row of the routed types used to be claimed and the not-yet-due
+  ones written straight back — two writes per backing-off message per run, plus
+  the row locks, and each one occupied a slot in `fetchLimit` that a ready
+  message could have used, so export latency grew with the size of the retry
+  queue. A storage without the interface keeps working unchanged: the exporter
+  falls back to `claim()` and filters in PHP.
+
+- `ClickHouseExportResult::$skipped` reads `0` against a retry-aware storage —
+  the messages it counted are no longer claimed. It never was queue depth; it
+  was wasted effort, and there is none left. Count `Pending` rows with a recent
+  `last_attempt_at` to see how many are waiting.
+
+- Requires `rasuvaeff/yii3-outbox` ^1.5 (was ^1.0): `RetryAwareStorageInterface`
+  does not exist below it.
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
