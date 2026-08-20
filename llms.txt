@@ -18,6 +18,11 @@ Needs a PSR-18 client + PSR-17 factories (e.g. guzzlehttp/guzzle).
 - `ClickHouseOutboxExporter::exportOrFail(?int $limit = null): ClickHouseExportResult`
   keeps the same batching logic but throws `Exception\ClickHouseExportException`
   when the finished batch contains retryable or terminal failures.
+- Claims via `claimReady()` when the storage implements
+  `Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface` (yii3-outbox-db >= 2.2.0),
+  so messages still in backoff are never claimed and never written back;
+  falls back to `claim()` otherwise. Requires `rasuvaeff/yii3-outbox` ^1.5.
+  Consequence: `$result->skipped` is 0 against a retry-aware storage.
 - Scopes the poll to `router->handledTypes()` via `claim($types, $limit)` — the
   atomic fetch, so two exporter workers never pick up the same message. Other
   consumers of the same outbox must claim disjoint types: `claim()` gives a

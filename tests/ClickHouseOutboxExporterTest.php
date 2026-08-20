@@ -16,6 +16,7 @@ use Rasuvaeff\Yii3Outbox\InMemoryStorage;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3Outbox\RetryPolicy;
+use Rasuvaeff\Yii3Outbox\StorageInterface;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExporter;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseWriterFactoryInterface;
 use Rasuvaeff\Yii3OutboxClickHouse\DefaultFailureDecider;
@@ -23,6 +24,7 @@ use Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseExportException;
 use Rasuvaeff\Yii3OutboxClickHouse\FailureDeciderInterface;
 use Rasuvaeff\Yii3OutboxClickHouse\FailureDecision;
 use Rasuvaeff\Yii3OutboxClickHouse\MapClickHouseMessageRouter;
+use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\PlainStorage;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\RecordingLogger;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\RecordingWriterFactory;
 use Testo\Assert;
@@ -109,7 +111,37 @@ final class ClickHouseOutboxExporterTest
         Assert::count($factory->writers['ab_conversions']->rows, 1);
     }
 
-    public function skipsMessagesNotReadyForRetry(): void
+    /**
+     * An exhausted message keeps arriving even inside its backoff window — it
+     * is the one thing `claimReady()` must not filter out, since nothing but
+     * `markFailed()` terminates it. Failing it must not end the batch: the
+     * messages behind it still have to be exported.
+     */
+    public function anExhaustedMessageDoesNotAbortTheRestOfTheBatch(): void
+    {
+        $this->storage->save($this->pending(
+            id: 'exhausted',
+            type: 'ab.exposure',
+            payload: '{"experiment":"x"}',
+            attempts: 3,
+            lastAttemptAt: new \DateTimeImmutable(self::NOW),
+        ));
+        $this->storage->save($this->pending(id: 'ready', type: 'ab.exposure', payload: '{"experiment":"y"}'));
+        $factory = new RecordingWriterFactory();
+
+        $result = $this->exporter($factory)->export();
+
+        Assert::same($result->terminalFailed, 1);
+        Assert::same($result->published, 1);
+        Assert::same($this->storage->getById('exhausted')?->getStatus(), OutboxStatus::Failed);
+        Assert::same($factory->writers['ab_exposures']->rows, [['event_id' => 'ready', 'experiment' => 'y']]);
+    }
+
+    /**
+     * A retry-aware storage never hands over a message still waiting out its
+     * backoff, so there is nothing to skip and nothing to write back.
+     */
+    public function neverClaimsMessagesNotReadyForRetry(): void
     {
         $this->storage->save($this->pending(
             id: 'a',
@@ -122,12 +154,38 @@ final class ClickHouseOutboxExporterTest
 
         $result = $this->exporter($factory)->export();
 
-        Assert::same($result->skipped, 1);
+        Assert::same($result->skipped, 0);
         Assert::same($result->totalHandled(), 0);
         Assert::same($factory->created, []);
         $message = $this->storage->getById('a');
         Assert::notNull($message);
         Assert::same($message->getStatus(), OutboxStatus::Pending);
+        Assert::same($message->getAttempts(), 1);
+    }
+
+    /**
+     * The fallback path, reached through a storage that cannot apply the
+     * predicate itself: the message is claimed, discarded in PHP and written
+     * back as `Pending`.
+     */
+    public function skipsMessagesNotReadyForRetryOnAPlainStorage(): void
+    {
+        $storage = new PlainStorage();
+        $storage->save($this->pending(
+            id: 'a',
+            type: 'ab.exposure',
+            payload: '{"experiment":"x"}',
+            attempts: 1,
+            lastAttemptAt: new \DateTimeImmutable(self::NOW),
+        ));
+        $factory = new RecordingWriterFactory();
+
+        $result = $this->exporter($factory, storage: $storage)->export();
+
+        Assert::same($result->skipped, 1);
+        Assert::same($result->totalHandled(), 0);
+        Assert::same($factory->created, []);
+        Assert::same($storage->getById('a')?->getStatus(), OutboxStatus::Pending);
     }
 
     public function terminalRouteFailureMarksMessageFailed(): void
@@ -208,7 +266,32 @@ final class ClickHouseOutboxExporterTest
         Assert::same($result->published, 1);
     }
 
-    public function skipsNotReadyMessageThatPrecedesAReadyOne(): void
+    public function skipsNotReadyMessageThatPrecedesAReadyOneOnAPlainStorage(): void
+    {
+        $storage = new PlainStorage();
+        $storage->save($this->pending(
+            id: 'not-ready',
+            type: 'ab.exposure',
+            payload: '{"experiment":"x"}',
+            attempts: 1,
+            lastAttemptAt: new \DateTimeImmutable(self::NOW),
+        ));
+        $storage->save($this->pending(id: 'ready', type: 'ab.exposure', payload: '{"experiment":"y"}'));
+        $factory = new RecordingWriterFactory();
+
+        $result = $this->exporter($factory, storage: $storage)->export();
+
+        Assert::same($result->skipped, 1);
+        Assert::same($result->published, 1);
+        Assert::same($factory->writers['ab_exposures']->rows, [['event_id' => 'ready', 'experiment' => 'y']]);
+    }
+
+    /**
+     * The point of the pushdown: with `fetchLimit` down to one slot, the
+     * backing-off message no longer occupies it, so the ready one is exported
+     * on this run instead of waiting for the retry queue to drain.
+     */
+    public function aBackingOffMessageDoesNotConsumeTheFetchLimit(): void
     {
         $this->storage->save($this->pending(
             id: 'not-ready',
@@ -220,11 +303,12 @@ final class ClickHouseOutboxExporterTest
         $this->storage->save($this->pending(id: 'ready', type: 'ab.exposure', payload: '{"experiment":"y"}'));
         $factory = new RecordingWriterFactory();
 
-        $result = $this->exporter($factory)->export();
+        $result = $this->exporter($factory, fetchLimit: 1)->export();
 
-        Assert::same($result->skipped, 1);
+        Assert::same($result->skipped, 0);
         Assert::same($result->published, 1);
         Assert::same($factory->writers['ab_exposures']->rows, [['event_id' => 'ready', 'experiment' => 'y']]);
+        Assert::same($this->storage->getById('not-ready')?->getStatus(), OutboxStatus::Pending);
     }
 
     public function logsRouteFailureWithContext(): void
@@ -529,10 +613,18 @@ final class ClickHouseOutboxExporterTest
         $this->storage = new InMemoryStorage();
 
         $handledCount = 0;
+        // Exactly what claimReady() lets through: never attempted, past the
+        // 30-second backoff, or out of attempts (which must keep arriving —
+        // nothing but markFailed() terminates one).
+        $claimable = 0;
 
         foreach ($specs as $index => $spec) {
             if ($spec['type'] === 'ab.exposure') {
                 $handledCount++;
+
+                if ($spec['attempts'] === 0 || $spec['attempts'] >= 3 || $spec['dueOffset'] >= 30) {
+                    $claimable++;
+                }
             }
 
             $this->storage->save($this->pending(
@@ -559,12 +651,17 @@ final class ClickHouseOutboxExporterTest
         Classify::cover($result->published > 0, 'published something', 5.0);
         Classify::cover($result->retryScheduled > 0, 'scheduled a retry', 5.0);
         Classify::cover($result->terminalFailed > 0, 'terminated something', 20.0);
-        Classify::cover($result->skipped > 0, 'skipped something', 10.0);
+        Classify::cover($claimable < $handledCount, 'left a message in backoff unclaimed', 10.0);
         Classify::when($specs === [], 'empty batch');
 
+        // The storage is retry-aware, so a handled message still inside its
+        // backoff window is never claimed and never counted. `skipped` is
+        // therefore structurally zero: the work it used to count is exactly
+        // what the readiness pushdown removes.
+        Assert::same($result->skipped, 0);
         Assert::same(
             $result->published + $result->retryScheduled + $result->terminalFailed + $result->skipped,
-            $handledCount,
+            $claimable,
         );
 
         foreach ($specs as $index => $spec) {
@@ -636,6 +733,7 @@ final class ClickHouseOutboxExporterTest
         ?FailureDeciderInterface $decider = null,
         ?LoggerInterface $logger = null,
         int $fetchLimit = 1000,
+        ?StorageInterface $storage = null,
     ): ClickHouseOutboxExporter {
         $now = self::NOW;
         $clock = new class ($now) implements ClockInterface {
@@ -648,7 +746,7 @@ final class ClickHouseOutboxExporterTest
         };
 
         return new ClickHouseOutboxExporter(
-            storage: $this->storage,
+            storage: $storage ?? $this->storage,
             router: new MapClickHouseMessageRouter(routes: self::ROUTES),
             retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 30),
             clock: $clock,
