@@ -35,26 +35,15 @@ Public API: `ClickHouseOutboxExporter`, `ClickHouseMessageRouterInterface` +
 
 ## Commands
 
-No PHP/Composer on the host — run in Docker via the `composer:2` image. Core
-`yii3-outbox` is consumed via a path repository while unpublished, so mount the
-**monorepo root**:
+No PHP/Composer on the host — run in Docker via the `composer:2` image.
 
 ```bash
-# install (inject path repo with a version override, then revert + drop the lock)
-docker run --rm -v "$REPO_ROOT":/repo -w /repo/yii3-outbox-clickhouse composer:2 sh -c '
-  git config --global --add safe.directory "*";
-  composer config repositories.core "{\"type\":\"path\",\"url\":\"../yii3-outbox\",\"options\":{\"versions\":{\"rasuvaeff/yii3-outbox\":\"1.0.0\"}}}";
-  composer update -q;
-  git checkout composer.json;
-  rm -f composer.lock'
-
-# build
-docker run --rm -v "$REPO_ROOT":/repo -w /repo/yii3-outbox-clickhouse composer:2 composer build
+docker run --rm -v "$PWD":/app -w /app composer:2 composer build
+docker run --rm -v "$PWD":/app -w /app composer:2 composer cs:fix
+docker run --rm -v "$PWD":/app -w /app composer:2 composer psalm
+docker run --rm -v "$PWD":/app -w /app composer:2 composer test
+docker run --rm -v "$PWD":/app -w /app composer:2 composer release-check
 ```
-
-`composer.json` keeps `rasuvaeff/yii3-outbox: ^1.0` (Packagist), no committed
-`repositories` block. GitHub CI is red until core is on Packagist — expected.
-`composer.lock` is gitignored (library).
 
 Or with Make:
 
@@ -68,6 +57,7 @@ make mutation
 make release-check
 ```
 
+`composer.lock` is gitignored (library).
 `make test-coverage` and `make mutation` bootstrap `pcov` inside the
 `composer:2` container because the base image has no coverage driver.
 
@@ -98,9 +88,11 @@ make release-check
   **retryable** (`save`, stays `Pending`). `export()` never throws on a ClickHouse
   outage. `exportOrFail()` is an opt-in strict wrapper that converts failed
   batches into `Exception\ClickHouseExportException`.
-- The exporter scopes the poll to `router->handledTypes()` via
-  `StorageInterface::findPending($types, $limit)`, so it never competes with a
-  generic `Processor` or another exporter for foreign messages.
+- The exporter scopes the poll to `router->handledTypes()`, passed as the
+  `$types` argument of the claim, so it never competes with a generic
+  `Processor` or another exporter for foreign messages. It claims — never
+  `findPending()`, which locks and marks nothing and would hand the same rows
+  to two workers.
 - The exporter does not bind/own `StorageInterface` — that is the storage
   backend's (`yii3-outbox-db`) or app's responsibility.
 - Integration tests need a real ClickHouse; skipped unless `CLICKHOUSE_HOST` set.
