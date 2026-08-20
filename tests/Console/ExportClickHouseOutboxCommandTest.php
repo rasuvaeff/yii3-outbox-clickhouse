@@ -14,6 +14,7 @@ use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExportRunner;
 use Rasuvaeff\Yii3OutboxClickHouse\Console\ExportClickHouseOutboxCommand;
 use Rasuvaeff\Yii3OutboxClickHouse\MapClickHouseMessageRouter;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\RecordingWriterFactory;
+use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
 use Testo\Assert;
 use Testo\Codecov\Covers;
@@ -81,6 +82,55 @@ final class ExportClickHouseOutboxCommandTest
         Assert::same($exit, 0);
         Assert::count($this->storage->findPending(), 2);
         Assert::true(str_contains($this->tester->getDisplay(), 'published=1'));
+    }
+
+    public function rejectsNegativeMaxIterations(): void
+    {
+        // max(0, -5) used to mean "run forever" — the loop bound silently
+        // became unlimited for a value the user meant as a limit.
+        $exit = $this->tester->execute(['--max-iterations' => '-5']);
+
+        Assert::same($exit, Command::INVALID);
+        Assert::string($this->tester->getDisplay())->contains('must be a non-negative integer');
+    }
+
+    public function rejectsNonNumericMaxIterations(): void
+    {
+        $exit = $this->tester->execute(['--max-iterations' => 'many']);
+
+        Assert::same($exit, Command::INVALID);
+    }
+
+    public function rejectsNegativeMaxIterationsEvenWithOnce(): void
+    {
+        // `--once` used to return before the option was looked at, so a value
+        // the command documents as invalid exited SUCCESS and drained a batch.
+        $this->seed(3);
+
+        $exit = $this->tester->execute(['--once' => true, '--max-iterations' => '-5']);
+
+        Assert::same($exit, Command::INVALID);
+        Assert::count($this->storage->findPending(), 3);
+    }
+
+    public function rejectsMaxIterationsAbovePhpIntMax(): void
+    {
+        // Digits alone are not enough: the cast clamps anything past
+        // PHP_INT_MAX to PHP_INT_MAX, which is the coercion this option rejects.
+        $exit = $this->tester->execute(['--max-iterations' => '9223372036854775808']);
+
+        Assert::same($exit, Command::INVALID);
+        Assert::string($this->tester->getDisplay())->contains('must be a non-negative integer');
+    }
+
+    public function acceptsMaxIterationsWithLeadingZeros(): void
+    {
+        $this->seed(3);
+
+        $exit = $this->tester->execute(['--max-iterations' => '02']);
+
+        Assert::same($exit, 0);
+        Assert::count($this->storage->findPending(), 1);
     }
 
     public function reportsZeroOnEmptyStorage(): void

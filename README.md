@@ -80,6 +80,11 @@ also works in plain Symfony Console):
 ./yii outbox:clickhouse:export --max-iterations=100
 ```
 
+`--max-iterations` accepts non-negative integers up to `PHP_INT_MAX` only, `0`
+meaning unlimited; anything else exits `Command::INVALID` instead of being
+coerced. The check runs before `--once`, so a malformed value never slips
+through as a successful single batch.
+
 Or drive the framework-agnostic `ClickHouseOutboxExportRunner` yourself:
 
 ```php
@@ -120,17 +125,42 @@ CREATE TABLE ab_exposures (
 |---|---|---|
 | Unknown type / bad payload / missing field (`ClickHouseRouteException`) | terminal | `markFailed` |
 | ClickHouse down / transport error (`ClickHouseWriteException`) | retryable | `save`, stays `Pending`, retried per `RetryPolicy` |
+| Retryable failure with no attempts left (`attempts >= maxAttempts`) | terminal | `markFailed` |
+
+The retry policy is the ceiling, not the decider: a retryable verdict on a
+message that has spent its last attempt becomes terminal, and a claimed message
+whose attempts were already exhausted is marked `Failed` on sight. Without that
+cap an outage longer than `maxAttempts x delaySeconds` would leave the whole
+backlog `Pending` forever — re-claimed and skipped on every run, with nothing
+for an alert on `Failed` to see.
+
+`FailureDecision` and `FailureDeciderInterface` are the extension point behind
+that table: implement the interface to classify your own exceptions and pass it
+to the exporter (the container binds `DefaultFailureDecider` by default). The
+attempt cap applies to whatever your decider returns.
 
 `export()` never throws on a ClickHouse outage. `ClickHouseExportResult` reports
 `published` / `retryScheduled` / `terminalFailed` / `skipped` and per-group detail.
 If a caller wants a catchable domain exception, `exportOrFail()` wraps a failed
 batch in `Exception\ClickHouseExportException` and carries the result object.
+`exportOrFail()` throws on **any** failed message, a scheduled retry included —
+a transient ClickHouse outage does raise it. It does not throw on `skipped`
+messages: those are still waiting out their backoff and were never attempted, so
+they stay unpublished without counting as a failure. Check
+`ClickHouseExportResult::hasTerminalFailures()` instead when only unrecoverable
+messages should page someone.
 
 ### Yii3 DI
 
 `config/di.php` binds the exporter, router, decoder, failure decider and writer
 factory. It does **not** bind `StorageInterface` — that is owned by the storage
-backend (`yii3-outbox-db`) or the application. Configure routes in params:
+backend (`yii3-outbox-db`) or the application. Configure routes in params —
+**the shipped default is an empty map and `MapClickHouseMessageRouter` rejects
+it**. That is deliberate: an empty map handles no type, but an empty
+`handledTypes()` tells `claim()` "every type", so the exporter would drain the
+whole outbox — other consumers' messages included — and terminally fail every
+one of them for having no route. Configure routes before running
+`outbox:clickhouse:export`:
 
 ```php
 // config/params.php

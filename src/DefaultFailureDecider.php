@@ -11,9 +11,10 @@ use Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseRouteException;
  * Routing/decoding failures ({@see ClickHouseRouteException}) are terminal — bad
  * data does not heal on retry. ClickHouse write/transport failures
  * ({@see \Rasuvaeff\ClickHouseToolkit\ClickHouseWriteException}) and any other
- * error are retryable; the
- * {@see \Rasuvaeff\Yii3Outbox\RetryPolicy} still caps the attempts, so a genuine
- * code bug eventually lands in `Failed` rather than retrying forever.
+ * error are retryable. The cap belongs to the caller, not to this class:
+ * {@see ClickHouseOutboxExporter} turns a retryable verdict into a terminal one
+ * once {@see \Rasuvaeff\Yii3Outbox\RetryPolicy} has no attempts left, so a
+ * genuine code bug lands in `Failed` rather than retrying forever.
  *
  * @api
  */

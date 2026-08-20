@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3OutboxClickHouse\Tests;
 
+use InvalidArgumentException;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseRouteException;
@@ -27,6 +28,19 @@ final class MapClickHouseMessageRouterTest
             'columns' => ['event_id', 'experiment', 'goal'],
         ],
     ];
+
+    public function rejectsAnEmptyRouteMap(): void
+    {
+        // An empty map makes handledTypes() return [], which claim() reads as
+        // "every type": the exporter would drain the whole outbox — other
+        // consumers' messages included — and terminally fail each one.
+        Expect::exception(InvalidArgumentException::class)
+            ->withMessageContaining('ClickHouse route map must not be empty')
+            ->withMessageContaining('would claim every message in the outbox')
+            ->withMessageContaining('terminally fail each one for having no route');
+
+        new MapClickHouseMessageRouter(routes: []);
+    }
 
     public function routesPayloadIntoRowInColumnOrder(): void
     {

@@ -32,8 +32,27 @@ final readonly class ClickHouseExportResult
         return \count($this->groups);
     }
 
+    /**
+     * True when the batch failed a message — both the retryable ones, which the
+     * next run picks up, and the terminal ones. `skipped` messages, which are
+     * still waiting out their backoff and were never attempted, do not count.
+     * This is what {@see ClickHouseOutboxExporter::exportOrFail()} throws on, so
+     * a ClickHouse outage that the exporter has already scheduled for retry does
+     * raise it; use {@see self::hasTerminalFailures()} when only unrecoverable
+     * messages should be reported.
+     */
     public function hasFailures(): bool
     {
         return $this->retryScheduled > 0 || $this->terminalFailed > 0;
+    }
+
+    /**
+     * True when the batch gave up on at least one message: bad data, or the
+     * retry policy running out of attempts. These messages are `Failed` and no
+     * further run will touch them.
+     */
+    public function hasTerminalFailures(): bool
+    {
+        return $this->terminalFailed > 0;
     }
 }
