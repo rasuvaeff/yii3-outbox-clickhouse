@@ -33,13 +33,14 @@ Needs a PSR-18 client + PSR-17 factories (e.g. guzzlehttp/guzzle).
   (`DefaultFailureDecider` is the container default); implement it to add your
   own terminal/retryable rules. The attempt cap still applies on top.
 - `ClickHouseExportResult::hasFailures()` (what `exportOrFail()` throws on)
-  counts scheduled retries too; `hasTerminalFailures()` counts only messages
-  given up on.
+  counts scheduled retries too, but not `skipped` — messages still waiting out
+  their backoff; `hasTerminalFailures()` counts only messages given up on.
 - `MapClickHouseMessageRouter` rejects an empty routes map: empty
   `handledTypes()` means "claim every type", which would drain and terminally
   fail the whole outbox. `params['routes']` ships empty — configure it.
-- `--max-iterations` accepts non-negative integers only; anything else exits
-  `Command::INVALID` (a negative value used to mean "unlimited").
+- `--max-iterations` accepts non-negative integers up to `PHP_INT_MAX` only;
+  anything else exits `Command::INVALID`, `--once` included (a negative value
+  used to mean "unlimited", and `--once` used to skip the check entirely).
 - At-least-once: retries may insert a row twice. The router fills an `event_id`
   column from `OutboxMessage::getId()`; make the table `ReplacingMergeTree ORDER
   BY event_id` so duplicates collapse.

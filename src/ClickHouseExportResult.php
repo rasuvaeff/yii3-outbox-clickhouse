@@ -33,10 +33,11 @@ final readonly class ClickHouseExportResult
     }
 
     /**
-     * True when the batch left any message unpublished — both the retryable
-     * ones, which the next run picks up, and the terminal ones. This is what
-     * {@see ClickHouseOutboxExporter::exportOrFail()} throws on, so a
-     * ClickHouse outage that the exporter has already scheduled for retry does
+     * True when the batch failed a message — both the retryable ones, which the
+     * next run picks up, and the terminal ones. `skipped` messages, which are
+     * still waiting out their backoff and were never attempted, do not count.
+     * This is what {@see ClickHouseOutboxExporter::exportOrFail()} throws on, so
+     * a ClickHouse outage that the exporter has already scheduled for retry does
      * raise it; use {@see self::hasTerminalFailures()} when only unrecoverable
      * messages should be reported.
      */

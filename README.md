@@ -80,6 +80,11 @@ also works in plain Symfony Console):
 ./yii outbox:clickhouse:export --max-iterations=100
 ```
 
+`--max-iterations` accepts non-negative integers up to `PHP_INT_MAX` only, `0`
+meaning unlimited; anything else exits `Command::INVALID` instead of being
+coerced. The check runs before `--once`, so a malformed value never slips
+through as a successful single batch.
+
 Or drive the framework-agnostic `ClickHouseOutboxExportRunner` yourself:
 
 ```php
@@ -138,8 +143,10 @@ attempt cap applies to whatever your decider returns.
 `published` / `retryScheduled` / `terminalFailed` / `skipped` and per-group detail.
 If a caller wants a catchable domain exception, `exportOrFail()` wraps a failed
 batch in `Exception\ClickHouseExportException` and carries the result object.
-`exportOrFail()` throws on **any** unpublished message, a scheduled retry
-included — a transient ClickHouse outage does raise it. Check
+`exportOrFail()` throws on **any** failed message, a scheduled retry included —
+a transient ClickHouse outage does raise it. It does not throw on `skipped`
+messages: those are still waiting out their backoff and were never attempted, so
+they stay unpublished without counting as a failure. Check
 `ClickHouseExportResult::hasTerminalFailures()` instead when only unrecoverable
 messages should page someone.
 

@@ -24,15 +24,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   claimed the entire outbox — messages belonging to other consumers included —
   and terminally failed each one for having no route
   ([#17](https://github.com/rasuvaeff/yii3-outbox-clickhouse/issues/17)).
-- `--max-iterations` now rejects anything that is not a non-negative integer.
+- `--max-iterations` now rejects anything that is not a non-negative integer no
+  greater than `PHP_INT_MAX`, and does so before `--once` is honoured.
   `max(0, (int) $value)` silently turned `--max-iterations=-5` into "run
-  forever" ([#18](https://github.com/rasuvaeff/yii3-outbox-clickhouse/issues/18)).
+  forever"; a digit string past `PHP_INT_MAX` was clamped by the same cast, and
+  `--once` returned before the option was looked at at all
+  ([#18](https://github.com/rasuvaeff/yii3-outbox-clickhouse/issues/18)).
 
 ### Added
 
 - `ClickHouseExportResult::hasTerminalFailures()` — `hasFailures()`, which
   `exportOrFail()` throws on, also counts scheduled retries, so a transient
-  outage raises it. Both are now documented for what they are
+  outage raises it, while `skipped` messages waiting out their backoff do not
+  make it true. Both are now documented for what they are
   ([#18](https://github.com/rasuvaeff/yii3-outbox-clickhouse/issues/18)).
 - `ConfigWiringTest` covers `config/di.php` and `config/params.php`, neither of
   which is reached by psalm (src-only) or cs.
