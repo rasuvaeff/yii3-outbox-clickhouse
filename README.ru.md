@@ -29,7 +29,7 @@ retry'а outbox'а. **Domain-агностичен** — переиспользу
 ## Требования
 
 - PHP 8.3+
-- `rasuvaeff/yii3-outbox` ^1.0, `rasuvaeff/clickhouse-toolkit` ^1.1
+- `rasuvaeff/yii3-outbox` ^1.6, `rasuvaeff/clickhouse-toolkit` ^1.1
 - `symfony/console` ^6.4 || ^7.0 (для команды воркера)
 - PSR-18 HTTP-клиент + PSR-17 фабрики (например `guzzlehttp/guzzle`)
 
@@ -174,7 +174,30 @@ RetryPolicy — это потолок, а не решающий: повторя�
 впустую проделанная работа, и её не осталось. Чтобы знать, сколько сообщений
 ждёт, считайте `Pending`-строки со свежим `last_attempt_at`.
 
-Требует `rasuvaeff/yii3-outbox` ^1.5.
+### Группа подтверждается одним statement'ом
+
+Успешная группа раньше подтверждалась одним `markPublished()` на сообщение —
+с `rasuvaeff/yii3-outbox-db` это upsert на каждое, тысяча statements в
+OLTP-базе на группу из тысячи сообщений. Когда хранилище реализует
+`Rasuvaeff\Yii3Outbox\BatchAcknowledgingStorageInterface` — `yii3-outbox-db`
+2.3.0 реализует, — экспортёр подтверждает всю группу одним вызовом
+`markPublishedBatch()`, одним statement'ом. Хранилище без интерфейса
+подтверждается по одному сообщению, ровно как раньше.
+
+Остаётся ли подтверждённая строка в таблице как `Published` или удаляется —
+настройка хранилища, а не экспортёра: `yii3-outbox-db` даёт
+`deletePublished: true` (params `delete_published`), при котором в outbox
+лежат только `Pending`/`Processing`/`Failed` и cron-очистка не нужна.
+Отправленное тогда наблюдается в ClickHouse — колонка `event_id` и есть id
+outbox-строки. At-least-once не меняется в обоих режимах: падение между insert
+и подтверждением оставляет группу в `Processing`, освобождение зависших
+claim'ов возвращает её в `Pending`, а `ReplacingMergeTree` схлопывает
+повторный insert.
+
+`ClickHouseExportGroupResult::$published` — число сообщений, записанных в
+ClickHouse, независимо от того, что затронуло подтверждение.
+
+Требует `rasuvaeff/yii3-outbox` ^1.6.
 
 ### Yii3 DI
 

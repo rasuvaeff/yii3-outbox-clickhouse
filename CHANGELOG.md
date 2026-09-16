@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.5.0 — 2026-09-16
+
+### Changed
+
+- A successful group is acknowledged with one `markPublishedBatch()` call when
+  the storage implements `BatchAcknowledgingStorageInterface`
+  (`rasuvaeff/yii3-outbox` 1.6.0; `rasuvaeff/yii3-outbox-db` 2.3.0 does) —
+  one statement instead of one `markPublished()` per message. A storage without
+  the interface is acknowledged one message at a time, as before. Keep-vs-delete
+  of acknowledged rows is the storage's setting
+  ([#24](https://github.com/rasuvaeff/yii3-outbox-clickhouse/issues/24)).
+- Requires `rasuvaeff/yii3-outbox` `^1.6`.
+
 ## 1.4.0 — 2026-08-20
 
 ### Changed

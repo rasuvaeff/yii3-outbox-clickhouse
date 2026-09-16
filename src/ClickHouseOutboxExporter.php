@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
+use Rasuvaeff\Yii3Outbox\BatchAcknowledgingStorageInterface;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface;
@@ -30,6 +31,12 @@ use Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseExportException;
  * said. At-least-once delivery means retries may insert a
  * row twice; pair the target table with `ReplacingMergeTree` keyed on the routed
  * event id (see {@see MapClickHouseMessageRouter}).
+ *
+ * A successful group is acknowledged through
+ * {@see BatchAcknowledgingStorageInterface::markPublishedBatch()} when the
+ * storage offers it — one statement for the group instead of one
+ * `markPublished()` per message. Whether the acknowledged rows are kept or
+ * deleted is the storage's setting, not this exporter's.
  *
  * @api
  */
@@ -195,9 +202,7 @@ final readonly class ClickHouseOutboxExporter
             $writer = $this->writerFactory->create($group['table'], $group['columns']);
             $writer->write($group['rows']);
 
-            foreach ($group['messages'] as $message) {
-                $this->storage->markPublished($message);
-            }
+            $this->acknowledge($group['messages']);
 
             return new ClickHouseExportGroupResult(
                 table: $group['table'],
@@ -233,6 +238,25 @@ final readonly class ClickHouseOutboxExporter
                 retryScheduled: $retry,
                 terminalFailed: $terminal,
             );
+        }
+    }
+
+    /**
+     * The group result reports what reached the sink, so it is the group size
+     * either way — never whatever the storage counted as touched.
+     *
+     * @param list<OutboxMessage> $messages
+     */
+    private function acknowledge(array $messages): void
+    {
+        if ($this->storage instanceof BatchAcknowledgingStorageInterface) {
+            $this->storage->markPublishedBatch($messages);
+
+            return;
+        }
+
+        foreach ($messages as $message) {
+            $this->storage->markPublished($message);
         }
     }
 

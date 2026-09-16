@@ -26,7 +26,7 @@ request-scoped direct sink, see `rasuvaeff/yii3-ab-testing-clickhouse`.
 ## Requirements
 
 - PHP 8.3+
-- `rasuvaeff/yii3-outbox` ^1.0, `rasuvaeff/clickhouse-toolkit` ^1.1
+- `rasuvaeff/yii3-outbox` ^1.6, `rasuvaeff/clickhouse-toolkit` ^1.1
 - `symfony/console` ^6.4 || ^7.0 (for the worker command)
 - A PSR-18 HTTP client + PSR-17 factories (e.g. `guzzlehttp/guzzle`)
 
@@ -169,7 +169,29 @@ longer claimed. It was never queue depth — it was wasted effort, and there is
 none left. Count `Pending` rows with a recent `last_attempt_at` if you want to
 know how many are waiting.
 
-Requires `rasuvaeff/yii3-outbox` ^1.5.
+### A group is acknowledged in one statement
+
+A successful group used to be acknowledged with one `markPublished()` per
+message — against `rasuvaeff/yii3-outbox-db` one upsert each, a thousand
+statements in the OLTP database for a thousand-message group. When the storage
+implements `Rasuvaeff\Yii3Outbox\BatchAcknowledgingStorageInterface` —
+`yii3-outbox-db` 2.3.0 does — the exporter acknowledges the whole group with
+one `markPublishedBatch()` call, one statement. A storage without the interface
+is acknowledged one message at a time, exactly as before.
+
+Whether an acknowledged row stays in the table as `Published` or is deleted is
+the storage's setting, not the exporter's: `yii3-outbox-db` offers
+`deletePublished: true` (params `delete_published`), under which the outbox
+holds only `Pending`/`Processing`/`Failed` rows and needs no purge cron. What
+was sent is then observed in ClickHouse — the `event_id` column is the outbox
+id. At-least-once is unchanged either way: a crash between the insert and the
+acknowledgement leaves the group `Processing`, the stale-claim release returns
+it to `Pending`, and `ReplacingMergeTree` collapses the second insert.
+
+`ClickHouseExportGroupResult::$published` is the number of messages written to
+ClickHouse, whatever the acknowledgement touched.
+
+Requires `rasuvaeff/yii3-outbox` ^1.6.
 
 ### Yii3 DI
 
