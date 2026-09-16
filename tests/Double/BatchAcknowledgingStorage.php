@@ -4,24 +4,22 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3OutboxClickHouse\Tests\Double;
 
+use Rasuvaeff\Yii3Outbox\BatchAcknowledgingStorageInterface;
 use Rasuvaeff\Yii3Outbox\InMemoryStorage;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
-use Rasuvaeff\Yii3Outbox\StorageInterface;
 
 /**
- * An {@see InMemoryStorage} exposed as a bare {@see StorageInterface}.
- *
- * `InMemoryStorage` implements `RetryAwareStorageInterface` as of
- * `rasuvaeff/yii3-outbox` 1.5.0, so the exporter claims through `claimReady()`
- * whenever it is used directly, and `BatchAcknowledgingStorageInterface` as of
- * 1.6.0, so it acknowledges a group through `markPublishedBatch()`. This double
- * is how a test reaches both fallback paths — a backend that cannot apply the
- * readiness predicate itself, where the exporter still claims everything and
- * discards in PHP, and one that is acknowledged one message at a time.
+ * An {@see InMemoryStorage} that records how it is acknowledged: every
+ * `markPublishedBatch()` call as the list of ids it carried, every
+ * `markPublished()` call by id. The exporter must use the former for a
+ * successful group and never the latter.
  */
-final class PlainStorage implements StorageInterface
+final class BatchAcknowledgingStorage implements BatchAcknowledgingStorageInterface
 {
-    /** @var list<string> ids passed to markPublished(), in call order */
+    /** @var list<list<string>> */
+    public array $batches = [];
+
+    /** @var list<string> */
     public array $acknowledged = [];
 
     public function __construct(private readonly InMemoryStorage $inner = new InMemoryStorage()) {}
@@ -49,6 +47,13 @@ final class PlainStorage implements StorageInterface
     {
         $this->acknowledged[] = $message->getId();
         $this->inner->markPublished($message);
+    }
+
+    #[\Override]
+    public function markPublishedBatch(array $messages): void
+    {
+        $this->batches[] = array_map(static fn(OutboxMessage $message): string => $message->getId(), $messages);
+        $this->inner->markPublishedBatch($messages);
     }
 
     #[\Override]

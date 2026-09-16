@@ -24,6 +24,7 @@ use Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseExportException;
 use Rasuvaeff\Yii3OutboxClickHouse\FailureDeciderInterface;
 use Rasuvaeff\Yii3OutboxClickHouse\FailureDecision;
 use Rasuvaeff\Yii3OutboxClickHouse\MapClickHouseMessageRouter;
+use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\BatchAcknowledgingStorage;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\PlainStorage;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\RecordingLogger;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\RecordingWriterFactory;
@@ -84,6 +85,52 @@ final class ClickHouseOutboxExporterTest
         Assert::notNull($second);
         Assert::same($first->getStatus(), OutboxStatus::Published);
         Assert::same($second->getStatus(), OutboxStatus::Published);
+    }
+
+    public function acknowledgesEachGroupWithOneBatchCall(): void
+    {
+        $storage = new BatchAcknowledgingStorage();
+        $storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
+        $storage->save($this->pending(id: 'b', type: 'ab.exposure', payload: '{"experiment":"y"}'));
+        $storage->save($this->pending(id: 'c', type: 'ab.conversion', payload: '{"experiment":"x","goal":"buy"}'));
+
+        $result = $this->exporter(new RecordingWriterFactory(), storage: $storage)->export();
+
+        Assert::same($result->published, 3);
+        Assert::same($storage->batches, [['a', 'b'], ['c']]);
+        Assert::same($storage->acknowledged, []);
+        Assert::same($storage->getById('a')?->getStatus(), OutboxStatus::Published);
+        Assert::same($storage->getById('c')?->getStatus(), OutboxStatus::Published);
+    }
+
+    public function acknowledgesOneMessageAtATimeOnAPlainStorage(): void
+    {
+        $storage = new PlainStorage();
+        $storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
+        $storage->save($this->pending(id: 'b', type: 'ab.exposure', payload: '{"experiment":"y"}'));
+
+        $result = $this->exporter(new RecordingWriterFactory(), storage: $storage)->export();
+
+        Assert::same($result->published, 2);
+        Assert::same($storage->acknowledged, ['a', 'b']);
+        Assert::same($storage->getById('a')?->getStatus(), OutboxStatus::Published);
+        Assert::same($storage->getById('b')?->getStatus(), OutboxStatus::Published);
+    }
+
+    public function aFailedGroupIsNotAcknowledgedAsABatch(): void
+    {
+        $storage = new BatchAcknowledgingStorage();
+        $storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
+        $storage->save($this->pending(id: 'b', type: 'ab.exposure', payload: '{"experiment":"y"}'));
+        $factory = new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('boom')]);
+
+        $result = $this->exporter($factory, storage: $storage)->export();
+
+        Assert::same($result->published, 0);
+        Assert::same($result->retryScheduled, 2);
+        Assert::same($storage->batches, []);
+        Assert::same($storage->acknowledged, []);
+        Assert::same($storage->getById('a')?->getStatus(), OutboxStatus::Pending);
     }
 
     public function exportOrFailReturnsResultWhenBatchSucceeds(): void

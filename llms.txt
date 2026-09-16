@@ -21,8 +21,14 @@ Needs a PSR-18 client + PSR-17 factories (e.g. guzzlehttp/guzzle).
 - Claims via `claimReady()` when the storage implements
   `Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface` (yii3-outbox-db >= 2.2.0),
   so messages still in backoff are never claimed and never written back;
-  falls back to `claim()` otherwise. Requires `rasuvaeff/yii3-outbox` ^1.5.
+  falls back to `claim()` otherwise. Requires `rasuvaeff/yii3-outbox` ^1.6.
   Consequence: `$result->skipped` is 0 against a retry-aware storage.
+- Acknowledges a successful group with one `markPublishedBatch()` call when the
+  storage implements `Rasuvaeff\Yii3Outbox\BatchAcknowledgingStorageInterface`
+  (yii3-outbox-db >= 2.3.0); one `markPublished()` per message otherwise.
+  Keep-vs-delete of acknowledged rows is the storage's setting
+  (`DbOutboxStorage(deletePublished: true)`), not the exporter's.
+  `ClickHouseExportGroupResult::$published` = messages written to ClickHouse.
 - Scopes the poll to `router->handledTypes()` via `claim($types, $limit)` — the
   atomic fetch, so two exporter workers never pick up the same message. Other
   consumers of the same outbox must claim disjoint types: `claim()` gives a
