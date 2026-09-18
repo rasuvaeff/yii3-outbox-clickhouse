@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.6.1 — 2026-09-18
+
+### Fixed
+
+- README / README.ru / llms.txt: the injected `event_id` is the dedup anchor
+  every retry path relies on — including, since 1.6.0, a group whose rows
+  reached ClickHouse but whose acknowledgement failed. `'eventIdColumn' =>
+  null` removes it, so the docs now say when disabling the injection is safe
+  (a payload column that is a stable id, made the target table's `ORDER BY`)
+  and what happens otherwise (#31).
+
 ## 1.6.0 — 2026-09-18
 
 ### Added

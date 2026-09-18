@@ -145,7 +145,14 @@ CREATE TABLE ab_exposures (
 ) ENGINE = ReplacingMergeTree ORDER BY event_id;
 ```
 
-### Семантика сбоев
+**Инъецируемый id события — якорь, на котором это держится.** Каждый путь
+повтора вставляет те же строки снова — недоступность ClickHouse, а с 1.6.0 и
+группа, чьи строки дошли до ClickHouse, но подтверждение в хранилище outbox
+не удалось, — и вторая вставка безвредна только потому, что строка несёт
+значение, по которому схлопывает `ORDER BY` таблицы. Отключение инъекции
+(`'eventIdColumn' => null`) убирает этот якорь: повтор даёт дубль, который
+ничем не сольётся. Отключайте только тогда, когда payload несёт собственный
+стабильный id, и делайте *эту* колонку `ORDER BY` целевой таблицы.
 
 | Сбой | Решение | Эффект |
 |---|---|---|
@@ -279,7 +286,8 @@ return [
 'rasuvaeff/yii3-outbox-clickhouse' => [
     'batchSize' => 1000,
     'fetchLimit' => 1000,
-    'eventIdColumn' => 'event_id',   // null: брать колонку из payload, как любую другую
+    'eventIdColumn' => 'event_id',   // null: брать колонку из payload, как любую другую —
+                                     // только если эта колонка payload и есть ключ дедупа таблицы
     'routes' => ['ab.exposure' => ['table' => 'ab_exposures', 'columns' => ['event_id', 'experiment']]],
     'retry' => ['maxAttempts' => 5, 'delaySeconds' => 30],
 ],
