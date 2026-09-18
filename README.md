@@ -26,9 +26,12 @@ request-scoped direct sink, see `rasuvaeff/yii3-ab-testing-clickhouse`.
 ## Requirements
 
 - PHP 8.3+
-- `rasuvaeff/yii3-outbox` ^1.6, `rasuvaeff/clickhouse-toolkit` ^1.1
-- `symfony/console` ^6.4 || ^7.0 (for the worker command)
+- `rasuvaeff/yii3-outbox` ^1.6, `rasuvaeff/clickhouse-toolkit` ^1.6
+- `symfony/console` ^6.4 || ^7.0 — a hard dependency, installed for every
+  consumer; the worker command is built on it
 - A PSR-18 HTTP client + PSR-17 factories (e.g. `guzzlehttp/guzzle`)
+- Optional: `ext-pcntl`, for the worker to finish its current batch on
+  `SIGTERM` / `SIGINT` instead of being killed mid-flight
 
 ## Installation
 
@@ -38,7 +41,7 @@ composer require rasuvaeff/yii3-outbox-clickhouse
 
 ## Usage
 
-### Worker
+### Exporter
 
 ```php
 use Rasuvaeff\ClickHouseToolkit\ClickHouseClientFactory;
@@ -69,7 +72,7 @@ $exporter = new ClickHouseOutboxExporter(
 $result = $exporter->export();   // one batch
 ```
 
-### Worker
+### Running the worker
 
 Run the loop with the bundled console command (registered for `yiisoft/yii-console`,
 also works in plain Symfony Console):
@@ -78,12 +81,26 @@ also works in plain Symfony Console):
 ./yii outbox:clickhouse:export                 # run forever
 ./yii outbox:clickhouse:export --once          # single batch (e.g. from cron)
 ./yii outbox:clickhouse:export --max-iterations=100
+./yii outbox:clickhouse:export --once --fail-on-error   # cron that must notice
 ```
 
 `--max-iterations` accepts non-negative integers up to `PHP_INT_MAX` only, `0`
 meaning unlimited; anything else exits `Command::INVALID` instead of being
 coerced. The check runs before `--once`, so a malformed value never slips
 through as a successful single batch.
+
+**Exit code.** The command exits `0` whatever the batches reported, so a
+crontab keeps its behaviour. With `--fail-on-error` a run in which *any*
+batch marked a message `Failed` exits `1` — a cron or systemd timer can then
+tell a bad run apart. Retries scheduled during a ClickHouse outage do not
+count; they are the normal course of things.
+
+**Stopping.** `SIGTERM` and `SIGINT` end the loop *after the current batch*
+when `ext-pcntl` is loaded: the batch in flight is written and acknowledged,
+the pause between batches is cut short, and the command exits `0` with
+`Stopped on signal after the current batch`. Without the extension the signal
+kills the process as before, and the batch in flight waits for the storage's
+stale-claim recovery. Kubernetes and systemd both send `SIGTERM` first.
 
 Or drive the framework-agnostic `ClickHouseOutboxExportRunner` yourself:
 
@@ -93,9 +110,14 @@ use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExportRunner;
 $runner = new ClickHouseOutboxExportRunner($exporter, idleSleepSeconds: 5, busySleepSeconds: 1);
 $runner->run(
     static fn (int $iteration): bool => true,                 // stop condition
-    static fn (int $seconds): mixed => sleep($seconds),       // sleeper
+    static fn (int $seconds): mixed => sleep($seconds),       // sleeper, between batches only
+    static fn (ClickHouseExportResult $batch): mixed => null, // optional: every batch as it completes
 );
 ```
+
+The sleeper runs *between* batches — never after the one the stop condition
+declined to follow — so a loop bounded to one iteration exports once and
+returns at once.
 
 ### Routing
 
@@ -138,6 +160,25 @@ for an alert on `Failed` to see.
 that table: implement the interface to classify your own exceptions and pass it
 to the exporter (the container binds `DefaultFailureDecider` by default). The
 attempt cap applies to whatever your decider returns.
+
+**The storage failing is the one thing `export()` does not absorb.** A
+`markFailed()`, `save()` or acknowledgement that throws — the OLTP database
+is down, not ClickHouse — propagates out of `export()`, but only after every
+message the batch claimed and had not yet resolved is released: saved back as
+`Pending` (with the attempt it spent, if the write had already happened), or
+marked `Failed` when it had no attempts left. That is the contract
+`yii3-outbox`'s `Processor` keeps, and this exporter keeps it too, so a
+storage incident does not leave half a batch `Processing` for a human to
+find with raw SQL. A group whose rows reached ClickHouse but whose
+acknowledgement failed goes back to `Pending` and is written again later —
+at-least-once, deduplicated by the event id.
+
+The release is best-effort: it needs the same storage that just failed. A
+message it cannot release is logged (`Failed to release a claimed ClickHouse
+outbox message`) and stays `Processing` until `releaseStaleClaims()` in
+`yii3-outbox-db` moves it — keep that on a schedule. The exception the caller
+receives is always the one that aborted the batch, never one raised while
+reacting to it.
 
 `export()` never throws on a ClickHouse outage. `ClickHouseExportResult` reports
 `published` / `retryScheduled` / `terminalFailed` / `skipped` and per-group detail.
@@ -197,7 +238,31 @@ Requires `rasuvaeff/yii3-outbox` ^1.6.
 
 `config/di.php` binds the exporter, router, decoder, failure decider and writer
 factory. It does **not** bind `StorageInterface` — that is owned by the storage
-backend (`yii3-outbox-db`) or the application. Configure routes in params —
+backend (`yii3-outbox-db`) or the application.
+
+**It does not bind `ClickHouseConfig` either, and you must.** The writer
+factory is built from an autowired `ClickHouseClientFactory`, whose
+`ClickHouseConfig` has a default for every constructor argument
+(`127.0.0.1`, database `default`, user `default`, empty password). Without an
+application binding the container assembles a client for localhost without a
+word, and the worker retries against it forever instead of failing on a
+configuration error. Either install `rasuvaeff/yii3-clickhouse-toolkit`, which
+binds `ClickHouseConfig` from its params, or bind it yourself:
+
+```php
+// config/common/di.php
+use Rasuvaeff\ClickHouseToolkit\ClickHouseConfig;
+
+return [
+    ClickHouseConfig::class => static fn (): ClickHouseConfig => new ClickHouseConfig(
+        host: 'clickhouse',
+        database: 'analytics',
+        username: 'exporter',
+        password: getenv('CLICKHOUSE_PASSWORD') ?: '',
+    ),
+];
+```
+ Configure routes in params —
 **the shipped default is an empty map and `MapClickHouseMessageRouter` rejects
 it**. That is deliberate: an empty map handles no type, but an empty
 `handledTypes()` tells `claim()` "every type", so the exporter would drain the
@@ -210,7 +275,7 @@ one of them for having no route. Configure routes before running
 'rasuvaeff/yii3-outbox-clickhouse' => [
     'batchSize' => 1000,
     'fetchLimit' => 1000,
-    'eventIdColumn' => 'event_id',
+    'eventIdColumn' => 'event_id',   // null: take the column from the payload like any other
     'routes' => ['ab.exposure' => ['table' => 'ab_exposures', 'columns' => ['event_id', 'experiment']]],
     'retry' => ['maxAttempts' => 5, 'delaySeconds' => 30],
 ],

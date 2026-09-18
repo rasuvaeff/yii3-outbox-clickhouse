@@ -29,9 +29,12 @@ retry'а outbox'а. **Domain-агностичен** — переиспользу
 ## Требования
 
 - PHP 8.3+
-- `rasuvaeff/yii3-outbox` ^1.6, `rasuvaeff/clickhouse-toolkit` ^1.1
-- `symfony/console` ^6.4 || ^7.0 (для команды воркера)
+- `rasuvaeff/yii3-outbox` ^1.6, `rasuvaeff/clickhouse-toolkit` ^1.6
+- `symfony/console` ^6.4 || ^7.0 — жёсткая зависимость, ставится каждому
+  потребителю; на ней построена команда воркера
 - PSR-18 HTTP-клиент + PSR-17 фабрики (например `guzzlehttp/guzzle`)
+- Опционально: `ext-pcntl`, чтобы воркер по `SIGTERM` / `SIGINT` дописывал
+  текущий батч, а не погибал посреди него
 
 ## Установка
 
@@ -41,7 +44,7 @@ composer require rasuvaeff/yii3-outbox-clickhouse
 
 ## Использование
 
-### Воркер
+### Экспортёр
 
 ```php
 use Rasuvaeff\ClickHouseToolkit\ClickHouseClientFactory;
@@ -78,15 +81,29 @@ $result = $exporter->export();   // one batch
 `yiisoft/yii-console`, также работает в чистой Symfony Console):
 
 ```bash
-./yii outbox:clickhouse:export                 # run forever
-./yii outbox:clickhouse:export --once          # single batch (e.g. from cron)
+./yii outbox:clickhouse:export                 # бесконечно
+./yii outbox:clickhouse:export --once          # один батч (например, из cron)
 ./yii outbox:clickhouse:export --max-iterations=100
+./yii outbox:clickhouse:export --once --fail-on-error   # cron, который обязан заметить
 ```
 
 `--max-iterations` принимает только неотрицательные целые не больше
 `PHP_INT_MAX`, `0` означает «без ограничения»; всё остальное завершается
 `Command::INVALID`, а не приводится к числу. Проверка выполняется до `--once`,
 поэтому некорректное значение не проскочит как успешный одиночный батч.
+
+**Код выхода.** Команда завершается с `0` независимо от того, что сообщили
+батчи, — crontab сохраняет прежнее поведение. С `--fail-on-error` прогон, в
+котором *любой* батч пометил сообщение `Failed`, завершается с `1` — cron или
+таймер systemd отличат плохой прогон. Ретраи, назначенные из-за недоступности
+ClickHouse, не считаются: это штатный ход вещей.
+
+**Остановка.** `SIGTERM` и `SIGINT` завершают цикл *после текущего батча*,
+если загружен `ext-pcntl`: батч в работе дописывается и подтверждается, пауза
+между батчами обрывается, команда выходит с `0` и строкой `Stopped on signal
+after the current batch`. Без расширения сигнал убивает процесс, как раньше,
+и батч в работе ждёт stale-claim-восстановления хранилища. И Kubernetes, и
+systemd сначала шлют `SIGTERM`.
 
 Или управляйте framework-агностичным `ClickHouseOutboxExportRunner` сами:
 
@@ -95,10 +112,15 @@ use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExportRunner;
 
 $runner = new ClickHouseOutboxExportRunner($exporter, idleSleepSeconds: 5, busySleepSeconds: 1);
 $runner->run(
-    static fn (int $iteration): bool => true,                 // stop condition
-    static fn (int $seconds): mixed => sleep($seconds),       // sleeper
+    static fn (int $iteration): bool => true,                 // условие продолжения
+    static fn (int $seconds): mixed => sleep($seconds),       // сон, только между батчами
+    static fn (ClickHouseExportResult $batch): mixed => null, // опционально: каждый батч по завершении
 );
 ```
+
+Сон происходит *между* батчами — никогда после того, за которым условие
+продолжения отказалось следовать, — так что цикл, ограниченный одной
+итерацией, экспортирует один раз и сразу возвращается.
 
 ### Маршрутизация
 
@@ -142,6 +164,24 @@ RetryPolicy — это потолок, а не решающий: повторя�
 таблицей: реализуйте интерфейс, чтобы классифицировать свои исключения, и
 передайте его экспортёру (контейнер по умолчанию биндит `DefaultFailureDecider`).
 Ограничение по попыткам применяется к любому вердикту вашего decider'а.
+
+**Единственное, что `export()` не поглощает, — сбой хранилища.** Бросивший
+`markFailed()`, `save()` или подтверждение — упала OLTP-база, а не ClickHouse —
+вылетает из `export()`, но только после того, как каждое сообщение, которое
+батч забрал и ещё не разрешил, освобождено: сохранено обратно как `Pending`
+(с потраченной попыткой, если запись уже произошла) или помечено `Failed`,
+если попыток не осталось. Это контракт, который держит `Processor` из
+`yii3-outbox`, и экспортёр держит его тоже — инцидент с хранилищем не
+оставляет полбатча в `Processing` для человека с raw SQL. Группа, чьи строки
+дошли до ClickHouse, но подтверждение не удалось, возвращается в `Pending` и
+будет записана снова — at-least-once, дедупликация по id события.
+
+Освобождение — best-effort: ему нужно то самое хранилище, которое только что
+упало. Сообщение, которое освободить не удалось, логируется (`Failed to
+release a claimed ClickHouse outbox message`) и остаётся `Processing`, пока
+его не сдвинет `releaseStaleClaims()` из `yii3-outbox-db` — держите его по
+расписанию. Исключение, которое получает вызывающий, — всегда то, что
+прервало батч, а не поднятое в реакции на него.
 
 `export()` никогда не бросает исключения при аварии ClickHouse.
 `ClickHouseExportResult` сообщает `published` / `retryScheduled` /
@@ -203,7 +243,30 @@ ClickHouse, независимо от того, что затронуло под
 
 `config/di.php` биндит экспортёр, роутер, декодер, failure-decider и фабрику
 writer'ов. Он **не** биндит `StorageInterface` — им владеет storage-backend
-(`yii3-outbox-db`) или приложение. Маршруты настраиваются в params — **по
+(`yii3-outbox-db`) или приложение.
+
+**`ClickHouseConfig` он тоже не биндит, а вы обязаны.** Фабрика writer'ов
+строится из автовайренного `ClickHouseClientFactory`, чей `ClickHouseConfig`
+имеет дефолт на каждый аргумент конструктора (`127.0.0.1`, база `default`,
+пользователь `default`, пустой пароль). Без биндинга в приложении контейнер
+молча соберёт клиент на localhost, и воркер будет бесконечно ретраить его
+вместо ошибки конфигурации. Либо поставьте `rasuvaeff/yii3-clickhouse-toolkit`,
+который биндит `ClickHouseConfig` из своих params, либо забиндите сами:
+
+```php
+// config/common/di.php
+use Rasuvaeff\ClickHouseToolkit\ClickHouseConfig;
+
+return [
+    ClickHouseConfig::class => static fn (): ClickHouseConfig => new ClickHouseConfig(
+        host: 'clickhouse',
+        database: 'analytics',
+        username: 'exporter',
+        password: getenv('CLICKHOUSE_PASSWORD') ?: '',
+    ),
+];
+```
+ Маршруты настраиваются в params — **по
 умолчанию карта пустая, и `MapClickHouseMessageRouter` её отвергает**. Это
 сделано намеренно: пустая карта не обслуживает ни одного типа, но пустой
 `handledTypes()` означает для `claim()` «все типы», поэтому экспортёр вычерпал
@@ -216,7 +279,7 @@ writer'ов. Он **не** биндит `StorageInterface` — им владее
 'rasuvaeff/yii3-outbox-clickhouse' => [
     'batchSize' => 1000,
     'fetchLimit' => 1000,
-    'eventIdColumn' => 'event_id',
+    'eventIdColumn' => 'event_id',   // null: брать колонку из payload, как любую другую
     'routes' => ['ab.exposure' => ['table' => 'ab_exposures', 'columns' => ['event_id', 'experiment']]],
     'retry' => ['maxAttempts' => 5, 'delaySeconds' => 30],
 ],

@@ -36,6 +36,15 @@ Needs a PSR-18 client + PSR-17 factories (e.g. guzzlehttp/guzzle).
 - Route/decode errors (`ClickHouseRouteException`) are terminal → `markFailed`.
   Transport errors (`ClickHouseWriteException`) are retryable → `save` (stays
   Pending). `export()` never throws on a ClickHouse outage.
+- A *storage* failure (`save`/`markFailed`/acknowledgement throws) propagates
+  out of `export()`, after every claimed-but-unresolved message is released:
+  `Pending` (with the spent attempt, if the write happened) or `Failed` when
+  out of attempts — the same contract as `Processor` in yii3-outbox. A group
+  written to ClickHouse but not acknowledged goes back to `Pending`
+  (at-least-once). The release is best-effort: what it cannot move is logged
+  (`Failed to release a claimed ClickHouse outbox message`) and stays
+  `Processing` for `releaseStaleClaims()`; the caller always gets the
+  original exception.
 - `RetryPolicy` caps the decider: a retryable failure with `attempts >=
   maxAttempts` is turned into `markFailed`, and a claimed message whose attempts
   are already spent is failed on sight. No message stays Pending with no
@@ -52,6 +61,19 @@ Needs a PSR-18 client + PSR-17 factories (e.g. guzzlehttp/guzzle).
 - `--max-iterations` accepts non-negative integers up to `PHP_INT_MAX` only;
   anything else exits `Command::INVALID`, `--once` included (a negative value
   used to mean "unlimited", and `--once` used to skip the check entirely).
+- Exit code is `0` regardless of batch results unless `--fail-on-error`: then
+  any batch with `hasTerminalFailures()` makes the run exit `1`; scheduled
+  retries never do.
+- `SIGTERM`/`SIGINT` stop the loop after the current batch when `ext-pcntl` is
+  loaded (`Console\GracefulStop`); the between-batch sleep is interruptible.
+  Without pcntl the signal kills the process as before.
+- The runner sleeps *between* batches, never after the last one; `run()` takes
+  an optional third callable receiving every `ClickHouseExportResult`.
+- `params['eventIdColumn'] = null` disables id injection (the column is then
+  read from the payload); only an absent key means the `event_id` default.
+- DI does not bind `ClickHouseConfig`; its constructor defaults to
+  `127.0.0.1`/`default`, so an app without a binding silently targets
+  localhost. Bind it (or install `rasuvaeff/yii3-clickhouse-toolkit`).
 - At-least-once: retries may insert a row twice. The router fills an `event_id`
   column from `OutboxMessage::getId()`; make the table `ReplacingMergeTree ORDER
   BY event_id` so duplicates collapse.
@@ -97,7 +119,7 @@ try {
 ## Worker
 
 ```bash
-./yii outbox:clickhouse:export [--once] [--max-iterations=N]
+./yii outbox:clickhouse:export [--once] [--max-iterations=N] [--fail-on-error]
 ```
 
 `Console\ExportClickHouseOutboxCommand` (Symfony Console / yiisoft/yii-console) wraps
@@ -109,6 +131,14 @@ use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExportRunner;
 $runner = new ClickHouseOutboxExportRunner($exporter, idleSleepSeconds: 5, busySleepSeconds: 1);
 $runner->runOnce();                                    // one batch -> ClickHouseExportResult
 $runner->run($shouldContinue, $sleeper);               // loop; callables injected for testability
+$runner->run($shouldContinue, $sleeper, $onBatch);     // $onBatch(ClickHouseExportResult) after every batch
+
+// Console\GracefulStop — what the command checks between batches
+$stop = new GracefulStop();
+$stop->listenToSignals();   // bool: SIGTERM/SIGINT -> request(), false without ext-pcntl
+$stop->request();           // programmatic stop
+$stop->isRequested();
+new ExportClickHouseOutboxCommand($runner, $stop);   // both optional: stop, sleep closure
 ```
 
 ## Customization

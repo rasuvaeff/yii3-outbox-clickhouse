@@ -25,15 +25,10 @@ final readonly class ClickHouseMessageRoute
     public array $columns;
 
     /**
-     * @var array<string, mixed>
-     */
-    public array $row;
-
-    /**
      * @param list<string> $columns
      * @param array<string, mixed> $row
      */
-    public function __construct(string $table, array $columns, array $row)
+    public function __construct(string $table, array $columns, public array $row)
     {
         if ($table === '') {
             throw new InvalidArgumentException('Route table must not be empty');
@@ -45,7 +40,6 @@ final readonly class ClickHouseMessageRoute
 
         $this->table = $table;
         $this->columns = $columns;
-        $this->row = $row;
     }
 
     /**

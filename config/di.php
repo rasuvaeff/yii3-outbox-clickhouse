@@ -39,10 +39,14 @@ return [
     ) use ($params): MapClickHouseMessageRouter {
         $config = $params['rasuvaeff/yii3-outbox-clickhouse'] ?? [];
 
+        // `??` would turn an explicit null — "do not inject the id" — back
+        // into the default; only an absent key means the default.
+        $eventIdColumn = \array_key_exists('eventIdColumn', $config) ? $config['eventIdColumn'] : 'event_id';
+
         return new MapClickHouseMessageRouter(
             routes: $config['routes'] ?? [],
             decoder: $decoder,
-            eventIdColumn: $config['eventIdColumn'] ?? 'event_id',
+            eventIdColumn: $eventIdColumn === null ? null : (string) $eventIdColumn,
         );
     },
 

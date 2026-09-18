@@ -1,0 +1,19 @@
+{
+    "symbol-whitelist": [
+        "pcntl_async_signals",
+        "pcntl_signal"
+    ],
+    "php-core-extensions": [
+        "Core",
+        "date",
+        "json",
+        "hash",
+        "pcre",
+        "Phar",
+        "Reflection",
+        "SPL",
+        "random",
+        "standard"
+    ],
+    "scan-files": []
+}

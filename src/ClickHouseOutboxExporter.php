@@ -38,6 +38,15 @@ use Rasuvaeff\Yii3OutboxClickHouse\Exception\ClickHouseExportException;
  * `markPublished()` per message. Whether the acknowledged rows are kept or
  * deleted is the storage's setting, not this exporter's.
  *
+ * The storage failing is the one thing `export()` does not absorb: the
+ * exception propagates, but not before every message the batch claimed and
+ * had not yet resolved is released — saved back as `Pending`, or marked
+ * `Failed` when it had no attempts left — the same contract
+ * {@see \Rasuvaeff\Yii3Outbox\Processor} keeps. The release reaches for the
+ * storage that just failed, so it is best-effort: its own failures are logged,
+ * never thrown, and the caller always receives the exception that aborted the
+ * batch.
+ *
  * @api
  */
 final readonly class ClickHouseOutboxExporter
@@ -57,6 +66,11 @@ final readonly class ClickHouseOutboxExporter
         }
     }
 
+    /**
+     * @throws \Throwable whatever the storage threw while recording the outcome
+     *                    of a message; the rest of the claimed batch has been
+     *                    released by then
+     */
     public function export(?int $limit = null): ClickHouseExportResult
     {
         $fetch = $limit ?? $this->fetchLimit;
@@ -64,6 +78,30 @@ final readonly class ClickHouseOutboxExporter
 
         $messages = $this->claimBatch($now, $fetch);
 
+        // Every claimed message, until something in the storage records its
+        // outcome. What is left here when the batch aborts is what the
+        // release puts back.
+        $unresolved = [];
+
+        foreach ($messages as $message) {
+            $unresolved[$message->getId()] = $message;
+        }
+
+        try {
+            return $this->exportClaimed($messages, $now, $unresolved);
+        } catch (\Throwable $e) {
+            $this->release($unresolved);
+
+            throw $e;
+        }
+    }
+
+    /**
+     * @param list<OutboxMessage> $messages
+     * @param array<string, OutboxMessage> $unresolved
+     */
+    private function exportClaimed(array $messages, \DateTimeImmutable $now, array &$unresolved): ClickHouseExportResult
+    {
         $published = 0;
         $retryScheduled = 0;
         $terminalFailed = 0;
@@ -85,6 +123,7 @@ final readonly class ClickHouseOutboxExporter
                 ]);
 
                 $this->storage->markFailed($message);
+                unset($unresolved[$message->getId()]);
                 $terminalFailed++;
 
                 continue;
@@ -92,6 +131,7 @@ final readonly class ClickHouseOutboxExporter
 
             if (!$this->retryPolicy->isReadyForRetry($message, $now)) {
                 $this->storage->save($message->withStatus(OutboxStatus::Pending));
+                unset($unresolved[$message->getId()]);
                 $skipped++;
 
                 continue;
@@ -108,25 +148,28 @@ final readonly class ClickHouseOutboxExporter
                     'error' => $e->getMessage(),
                 ]);
 
+                // The attempt is spent on the routing: a release records it.
+                $unresolved[$message->getId()] = $message;
+
                 if ($this->persistFailure($message, $e) === FailureDecision::Terminal) {
                     $terminalFailed++;
                 } else {
                     $retryScheduled++;
                 }
 
+                unset($unresolved[$message->getId()]);
+
                 continue;
             }
 
             $key = $route->groupKey();
 
-            if (!isset($groups[$key])) {
-                $groups[$key] = [
-                    'table' => $route->table,
-                    'columns' => $route->columns,
-                    'rows' => [],
-                    'messages' => [],
-                ];
-            }
+            $groups[$key] ??= [
+                'table' => $route->table,
+                'columns' => $route->columns,
+                'rows' => [],
+                'messages' => [],
+            ];
 
             $groups[$key]['rows'][] = $route->row;
             $groups[$key]['messages'][] = $message;
@@ -135,7 +178,7 @@ final readonly class ClickHouseOutboxExporter
         $groupResults = [];
 
         foreach ($groups as $group) {
-            $result = $this->exportGroup($group);
+            $result = $this->exportGroup($group, $unresolved);
             $published += $result->published;
             $retryScheduled += $result->retryScheduled;
             $terminalFailed += $result->terminalFailed;
@@ -193,25 +236,21 @@ final readonly class ClickHouseOutboxExporter
 
     /**
      * @param array{table: non-empty-string, columns: non-empty-list<string>, rows: list<array<string, mixed>>, messages: list<OutboxMessage>} $group
+     * @param array<string, OutboxMessage> $unresolved
      */
-    private function exportGroup(array $group): ClickHouseExportGroupResult
+    private function exportGroup(array $group, array &$unresolved): ClickHouseExportGroupResult
     {
         $count = \count($group['messages']);
+
+        // From here on the attempt is spent, whatever happens to the write:
+        // a release records it.
+        foreach ($group['messages'] as $message) {
+            $unresolved[$message->getId()] = $message;
+        }
 
         try {
             $writer = $this->writerFactory->create($group['table'], $group['columns']);
             $writer->write($group['rows']);
-
-            $this->acknowledge($group['messages']);
-
-            return new ClickHouseExportGroupResult(
-                table: $group['table'],
-                columns: $group['columns'],
-                messageCount: $count,
-                published: $count,
-                retryScheduled: 0,
-                terminalFailed: 0,
-            );
         } catch (\Throwable $e) {
             $retry = 0;
             $terminal = 0;
@@ -222,6 +261,8 @@ final readonly class ClickHouseOutboxExporter
                 } else {
                     $retry++;
                 }
+
+                unset($unresolved[$message->getId()]);
             }
 
             $this->logger->warning('ClickHouse outbox export group failed', [
@@ -238,6 +279,64 @@ final readonly class ClickHouseOutboxExporter
                 retryScheduled: $retry,
                 terminalFailed: $terminal,
             );
+        }
+
+        // The rows are in ClickHouse. A storage that fails to record that
+        // is not a delivery failure the decider should rule on: the
+        // exception propagates and the release puts the group back as
+        // Pending — redelivered later, deduplicated by the event id.
+        $this->acknowledge($group['messages']);
+
+        foreach ($group['messages'] as $message) {
+            unset($unresolved[$message->getId()]);
+        }
+
+        return new ClickHouseExportGroupResult(
+            table: $group['table'],
+            columns: $group['columns'],
+            messageCount: $count,
+            published: $count,
+            retryScheduled: 0,
+            terminalFailed: 0,
+        );
+    }
+
+    /**
+     * Puts back what the batch claimed but never resolved, once it is already
+     * aborting. A message with attempts left is saved as `Pending` — with the
+     * attempt it may have spent — and one without is marked `Failed`, exactly
+     * what the loop would have done on reaching it.
+     *
+     * Each message is released independently and a failure to release one is
+     * logged, not thrown: the storage is most likely what aborted the batch,
+     * and the caller must still receive that original exception.
+     *
+     * @param array<string, OutboxMessage> $messages
+     */
+    private function release(array $messages): void
+    {
+        foreach ($messages as $message) {
+            try {
+                if ($this->retryPolicy->shouldRetry($message)) {
+                    $this->storage->save($message->withStatus(OutboxStatus::Pending));
+
+                    continue;
+                }
+
+                $this->logger->warning('ClickHouse outbox message exhausted its retries', [
+                    'messageId' => $message->getId(),
+                    'type' => $message->getType(),
+                    'attempts' => $message->getAttempts(),
+                ]);
+                $this->storage->markFailed($message);
+            } catch (\Throwable $e) {
+                $this->logger->error('Failed to release a claimed ClickHouse outbox message', [
+                    'messageId' => $message->getId(),
+                    'type' => $message->getType(),
+                    'exception' => $e::class,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
     }
 

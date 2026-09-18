@@ -6,6 +6,7 @@ namespace Rasuvaeff\Yii3OutboxClickHouse\Tests;
 
 use InvalidArgumentException;
 use Rasuvaeff\Yii3Outbox\InMemoryStorage;
+use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseMessageRouterInterface;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExporter;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExportRunner;
@@ -55,6 +56,23 @@ final class ConfigWiringTest
 
         Assert::instanceOf($router, MapClickHouseMessageRouter::class);
         Assert::same($router->handledTypes(), ['ab.exposure']);
+    }
+
+    public function anExplicitNullEventIdColumnDisablesTheInjection(): void
+    {
+        $message = OutboxMessage::create(type: 'ab.exposure', payload: '{"event_id":"from-payload","experiment":"x"}', id: 'evt-1');
+
+        $withDefault = $this->router(['routes' => self::ROUTES])->route($message);
+        Assert::same($withDefault->row, ['event_id' => 'evt-1', 'experiment' => 'x']);
+
+        // `?? 'event_id'` used to swallow this null and inject anyway; the
+        // only way to disable the injection was overriding the definition.
+        // With it disabled the column comes from the payload like any other.
+        $withNull = $this->router(['routes' => self::ROUTES, 'eventIdColumn' => null])->route($message);
+        Assert::same($withNull->row, ['event_id' => 'from-payload', 'experiment' => 'x']);
+
+        $renamed = $this->router(['routes' => ['ab.exposure' => ['table' => 'ab_exposures', 'columns' => ['id', 'experiment']]], 'eventIdColumn' => 'id'])->route($message);
+        Assert::same($renamed->row, ['id' => 'evt-1', 'experiment' => 'x']);
     }
 
     public function theShippedDefaultRefusesToBuildARouter(): void
@@ -144,7 +162,7 @@ final class ConfigWiringTest
     {
         $params = ['rasuvaeff/yii3-outbox-clickhouse' => $config];
 
-        return (static fn(array $params): array => require \dirname(__DIR__) . '/config/di.php')($params);
+        return (static fn(array $params): array => require __DIR__ . '/../config/di.php')($params);
     }
 
     /**
@@ -152,6 +170,6 @@ final class ConfigWiringTest
      */
     private function params(): array
     {
-        return require \dirname(__DIR__) . '/config/params.php';
+        return require __DIR__ . '/../config/params.php';
     }
 }

@@ -43,10 +43,10 @@ final class ClickHouseIntegrationTest
 
         $this->clientFactory = new ClickHouseClientFactory(new ClickHouseConfig(
             host: $host,
-            port: (int) self::env('CLICKHOUSE_PORT', '8123'),
-            database: self::env('CLICKHOUSE_DB', 'default'),
-            username: self::env('CLICKHOUSE_USER', 'default'),
-            password: self::env('CLICKHOUSE_PASSWORD', ''),
+            port: (int) $this->env('CLICKHOUSE_PORT', '8123'),
+            database: $this->env('CLICKHOUSE_DB', 'default'),
+            username: $this->env('CLICKHOUSE_USER', 'default'),
+            password: $this->env('CLICKHOUSE_PASSWORD', ''),
         ));
 
         $client = $this->clientFactory->create();
@@ -60,7 +60,7 @@ final class ClickHouseIntegrationTest
     public function exportsBatchedMessagesToClickHouse(): void
     {
         if ($this->clientFactory === null) {
-            Assert::true(true);
+            Assert::true(actual: true);
 
             return;
         }
@@ -92,7 +92,7 @@ final class ClickHouseIntegrationTest
     public function duplicateEventIdsCollapseOnReplacingMergeTree(): void
     {
         if ($this->clientFactory === null) {
-            Assert::true(true);
+            Assert::true(actual: true);
 
             return;
         }
@@ -111,7 +111,7 @@ final class ClickHouseIntegrationTest
     public function exportMarksMessagesPublished(): void
     {
         if ($this->clientFactory === null) {
-            Assert::true(true);
+            Assert::true(actual: true);
 
             return;
         }
@@ -133,7 +133,7 @@ final class ClickHouseIntegrationTest
         Assert::same($stored->getStatus(), OutboxStatus::Published);
     }
 
-    private static function env(string $name, string $default): string
+    private function env(string $name, string $default): string
     {
         $value = getenv($name);
 
