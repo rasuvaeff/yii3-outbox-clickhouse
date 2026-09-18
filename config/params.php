@@ -13,6 +13,7 @@ return [
     'rasuvaeff/yii3-outbox-clickhouse' => [
         'fetchLimit' => 1000,
         'batchSize' => 1000,
+        // column filled from the message id; null disables the injection
         'eventIdColumn' => 'event_id',
         'idleSleepSeconds' => 5,
         'busySleepSeconds' => 1,

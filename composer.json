@@ -46,6 +46,9 @@
         "vimeo/psalm": "^6.16",
         "yiisoft/test-support": "^3.1"
     },
+    "suggest": {
+        "ext-pcntl": "Lets outbox:clickhouse:export finish the current batch on SIGTERM/SIGINT instead of being killed mid-flight"
+    },
     "autoload": {
         "psr-4": {
             "Rasuvaeff\\Yii3OutboxClickHouse\\": "src/"
@@ -69,6 +72,9 @@
         "sort-packages": true
     },
     "extra": {
+        "branch-alias": {
+            "dev-master": "1.x-dev"
+        },
         "config-plugin": {
             "di": "di.php",
             "params": "params.php"

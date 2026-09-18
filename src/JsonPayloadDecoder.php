@@ -21,10 +21,7 @@ final readonly class JsonPayloadDecoder implements ClickHousePayloadDecoderInter
         try {
             $decoded = json_decode($message->getPayload(), associative: true, flags: JSON_THROW_ON_ERROR);
         } catch (\JsonException $e) {
-            throw new ClickHouseRouteException(
-                sprintf('Invalid JSON payload for message "%s": %s', $message->getId(), $e->getMessage()),
-                previous: $e,
-            );
+            throw new ClickHouseRouteException(sprintf('Invalid JSON payload for message "%s": %s', $message->getId(), $e->getMessage()), $e->getCode(), previous: $e);
         }
 
         if (!\is_array($decoded)) {

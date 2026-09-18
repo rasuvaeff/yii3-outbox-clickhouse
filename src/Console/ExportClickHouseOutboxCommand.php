@@ -23,14 +23,39 @@ use Symfony\Component\Console\Output\OutputInterface;
  * an oversized digit string still means it. The option is validated before
  * `--once` is honoured, so a malformed value is never silently ignored.
  *
+ * The exit code is {@see Command::SUCCESS} whatever the batches reported,
+ * unless `--fail-on-error` is given: then a run in which any batch marked a
+ * message `Failed` exits with {@see Command::FAILURE}, so a cron or timer can
+ * tell a bad run apart. Messages scheduled for a retry do not count — they
+ * are the normal course of a ClickHouse outage.
+ *
+ * `SIGTERM` and `SIGINT` end the loop after the current batch (see
+ * {@see GracefulStop}); the sleep between batches is interruptible too.
+ *
  * @api
  */
 #[AsCommand(name: 'outbox:clickhouse:export', description: 'Export pending outbox messages to ClickHouse in batches')]
 final class ExportClickHouseOutboxCommand extends Command
 {
-    public function __construct(private readonly ClickHouseOutboxExportRunner $runner)
-    {
+    private readonly GracefulStop $stop;
+
+    /** @var \Closure(int): void */
+    private readonly \Closure $sleep;
+
+    /**
+     * @param ?GracefulStop $stop the stop request the loop honours; a fresh one when null
+     * @param ?\Closure(int): void $sleep sleeps the given seconds; `sleep()` when null
+     */
+    public function __construct(
+        private readonly ClickHouseOutboxExportRunner $runner,
+        ?GracefulStop $stop = null,
+        ?\Closure $sleep = null,
+    ) {
         parent::__construct();
+        $this->stop = $stop ?? new GracefulStop();
+        $this->sleep = $sleep ?? static function (int $seconds): void {
+            sleep($seconds);
+        };
     }
 
     #[\Override]
@@ -38,7 +63,8 @@ final class ExportClickHouseOutboxCommand extends Command
     {
         $this
             ->addOption('once', null, InputOption::VALUE_NONE, 'Run a single export batch and exit')
-            ->addOption('max-iterations', null, InputOption::VALUE_REQUIRED, 'Stop after N iterations (0 = unlimited)', '0');
+            ->addOption('max-iterations', null, InputOption::VALUE_REQUIRED, 'Stop after N iterations (0 = unlimited)', '0')
+            ->addOption('fail-on-error', null, InputOption::VALUE_NONE, 'Exit with a non-zero code when any batch marked a message Failed');
     }
 
     #[\Override]
@@ -62,26 +88,44 @@ final class ExportClickHouseOutboxCommand extends Command
         }
 
         $maxIterations = (int) $normalized;
+        $failOnError = $input->getOption('fail-on-error') === true;
 
         if ($input->getOption('once') === true) {
             $result = $this->runner->runOnce();
             $this->report($result, $output);
 
-            return Command::SUCCESS;
+            return $failOnError && $result->hasTerminalFailures() ? Command::FAILURE : Command::SUCCESS;
         }
 
+        $this->stop->listenToSignals();
+        $anyTerminal = false;
+
         $result = $this->runner->run(
-            static fn(int $iteration): bool => $maxIterations === 0 || $iteration <= $maxIterations,
-            static function (int $seconds): void {
-                if ($seconds > 0) {
-                    sleep($seconds);
-                }
+            fn(int $iteration): bool => !$this->stop->isRequested() && ($maxIterations === 0 || $iteration <= $maxIterations),
+            $this->sleepUnlessStopped(...),
+            static function (ClickHouseExportResult $batch) use (&$anyTerminal): void {
+                $anyTerminal = $anyTerminal || $batch->hasTerminalFailures();
             },
         );
 
         $this->report($result, $output);
 
-        return Command::SUCCESS;
+        if ($this->stop->isRequested()) {
+            $output->writeln('Stopped on signal after the current batch');
+        }
+
+        return $failOnError && $anyTerminal ? Command::FAILURE : Command::SUCCESS;
+    }
+
+    /**
+     * One second at a time, so a stop request ends the pause between batches
+     * rather than waiting out an idle sleep.
+     */
+    private function sleepUnlessStopped(int $seconds): void
+    {
+        for ($slept = 0; $slept < $seconds && !$this->stop->isRequested(); $slept++) {
+            ($this->sleep)(1);
+        }
     }
 
     private function rejectMaxIterations(OutputInterface $output): int

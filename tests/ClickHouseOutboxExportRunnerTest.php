@@ -10,6 +10,7 @@ use Rasuvaeff\Yii3Outbox\InMemoryStorage;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3Outbox\RetryPolicy;
+use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseExportResult;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExporter;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExportRunner;
 use Rasuvaeff\Yii3OutboxClickHouse\MapClickHouseMessageRouter;
@@ -73,19 +74,70 @@ final class ClickHouseOutboxExportRunnerTest
         Assert::same($lastIteration, 4);
     }
 
-    public function sleepsBusyThenIdle(): void
+    public function sleepsBusyThenIdleBetweenBatches(): void
     {
         $this->seed('a');
         $sleeps = [];
 
         $this->runner(idle: 5, busy: 1)->run(
-            static fn(int $iteration): bool => $iteration <= 2,
+            static fn(int $iteration): bool => $iteration <= 3,
             function (int $seconds) use (&$sleeps): void {
                 $sleeps[] = $seconds;
             },
         );
 
+        // Busy after the batch that exported 'a', idle after the empty one;
+        // nothing after the third batch, which nothing follows.
         Assert::same($sleeps, [1, 5]);
+    }
+
+    public function neverSleepsAfterTheLastBatch(): void
+    {
+        $this->seed('a');
+        $sleeps = [];
+
+        $this->runner(idle: 5, busy: 1)->run(
+            static fn(int $iteration): bool => $iteration <= 1,
+            function (int $seconds) use (&$sleeps): void {
+                $sleeps[] = $seconds;
+            },
+        );
+
+        Assert::same($sleeps, []);
+    }
+
+    public function sleepsBeforeEveryBatchButTheFirst(): void
+    {
+        $events = [];
+
+        $this->runner(idle: 5, busy: 1)->run(
+            static fn(int $iteration): bool => $iteration <= 3,
+            function (int $seconds) use (&$events): void {
+                $events[] = 'sleep ' . $seconds;
+            },
+            function () use (&$events): void {
+                $events[] = 'batch';
+            },
+        );
+
+        Assert::same($events, ['batch', 'sleep 5', 'batch', 'sleep 5', 'batch']);
+    }
+
+    public function reportsEveryBatchResultAsItCompletes(): void
+    {
+        $this->seed('a');
+        $seen = [];
+
+        $last = $this->runner()->run(
+            static fn(int $iteration): bool => $iteration <= 2,
+            static fn(int $seconds): null => null,
+            function (ClickHouseExportResult $result) use (&$seen): void {
+                $seen[] = $result->published;
+            },
+        );
+
+        Assert::same($seen, [1, 0]);
+        Assert::same($last->published, 0);
     }
 
     public function rejectsNegativeSleep(): void
@@ -115,7 +167,7 @@ final class ClickHouseOutboxExportRunnerTest
         $sleeps = [];
 
         (new ClickHouseOutboxExportRunner($this->exporter))->run(
-            static fn(int $iteration): bool => $iteration <= 2,
+            static fn(int $iteration): bool => $iteration <= 3,
             function (int $seconds) use (&$sleeps): void {
                 $sleeps[] = $seconds;
             },

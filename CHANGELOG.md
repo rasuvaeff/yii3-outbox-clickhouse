@@ -1,5 +1,50 @@
 # Changelog
 
+## 1.6.0 — 2026-09-18
+
+### Added
+
+- `outbox:clickhouse:export --fail-on-error`: exit `1` when any batch of the
+  run marked a message `Failed`, so a cron or systemd timer can tell a bad
+  run apart. The default exit code stays `0`; scheduled retries never count
+  (#29).
+- Graceful stop: with `ext-pcntl` loaded, `SIGTERM` / `SIGINT` end the worker
+  loop after the current batch is written and acknowledged, and cut the pause
+  between batches short. `Console\GracefulStop` is the request the command
+  checks; it can be injected and requested programmatically. `ext-pcntl` is
+  suggested, not required (#29).
+- `ClickHouseOutboxExportRunner::run()` takes an optional third callable that
+  receives every batch's `ClickHouseExportResult` as it completes (#29).
+
+### Changed
+
+- A storage failure mid-batch no longer leaves the rest of the claimed batch
+  in `Processing`. `export()` releases every message it claimed but had not
+  resolved — back to `Pending`, with the attempt it spent if the write had
+  happened, or `Failed` when out of attempts — before the exception
+  propagates, the way `Processor` in `yii3-outbox` does. A group whose rows
+  reached ClickHouse but whose acknowledgement threw is now released as
+  `Pending` and the exception propagates, instead of the failure being ruled
+  on by the decider as if ClickHouse had failed. Release failures are logged
+  (`Failed to release a claimed ClickHouse outbox message`), never thrown
+  (#26).
+- The runner sleeps between batches, never after the one the stop condition
+  declined to follow: `--max-iterations=1` no longer sleeps `idleSleepSeconds`
+  for nothing before exiting (#28).
+
+### Fixed
+
+- `config/di.php`: `'eventIdColumn' => null` in params now disables the id
+  injection as the router's constructor allows; `??` used to turn it back
+  into the `event_id` default (#28).
+- README: two consecutive `### Worker` headings; `clickhouse-toolkit`
+  constraint is `^1.6`, not `^1.1`; `symfony/console` is a hard dependency;
+  the DI section states that `ClickHouseConfig` must be bound by the
+  application — its defaults silently point the writer at `127.0.0.1` (#27).
+- `composer.json` declares `extra.branch-alias` (`dev-master` → `1.x-dev`) so
+  the family's config-merge harness can resolve the package from a path
+  repository.
+
 ## 1.5.0 — 2026-09-16
 
 ### Changed

@@ -34,19 +34,34 @@ final readonly class ClickHouseOutboxExportRunner
     /**
      * Runs export batches until $shouldContinue returns false.
      *
+     * The sleep comes *between* batches: before every batch but the first,
+     * and never after the one $shouldContinue declined to follow — a loop
+     * bounded to one iteration exports once and returns at once.
+     *
      * @param callable(int): bool $shouldContinue receives the 1-based iteration number; return false to stop
-     * @param callable(int): void $sleeper receives the seconds to sleep after each batch
+     * @param callable(int): void $sleeper receives the seconds to sleep before the next batch
+     * @param ?callable(ClickHouseExportResult): void $onBatch receives every batch's result as it completes
      *
      * @return ClickHouseExportResult the result of the last batch (empty if none ran)
      */
-    public function run(callable $shouldContinue, callable $sleeper): ClickHouseExportResult
+    public function run(callable $shouldContinue, callable $sleeper, ?callable $onBatch = null): ClickHouseExportResult
     {
         $result = new ClickHouseExportResult(published: 0, retryScheduled: 0, terminalFailed: 0, skipped: 0, groups: []);
         $iteration = 0;
+        $pause = null;
 
         while ($shouldContinue(++$iteration)) {
+            if ($pause !== null) {
+                $sleeper($pause);
+            }
+
             $result = $this->exporter->export();
-            $sleeper($result->totalHandled() === 0 ? $this->idleSleepSeconds : $this->busySleepSeconds);
+
+            if ($onBatch !== null) {
+                $onBatch($result);
+            }
+
+            $pause = $result->totalHandled() === 0 ? $this->idleSleepSeconds : $this->busySleepSeconds;
         }
 
         return $result;

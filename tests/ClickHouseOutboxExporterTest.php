@@ -25,9 +25,12 @@ use Rasuvaeff\Yii3OutboxClickHouse\FailureDeciderInterface;
 use Rasuvaeff\Yii3OutboxClickHouse\FailureDecision;
 use Rasuvaeff\Yii3OutboxClickHouse\MapClickHouseMessageRouter;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\BatchAcknowledgingStorage;
+use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\FlakyStorage;
+use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\PlainFlakyStorage;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\PlainStorage;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\RecordingLogger;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\RecordingWriterFactory;
+use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\StorageDown;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Expect;
@@ -775,6 +778,435 @@ final class ClickHouseOutboxExporterTest
         yield 'empty outbox' => [[], 'ok'];
     }
 
+    // --- storage failure mid-batch --------------------------------------
+
+    /**
+     * @return array{0: FlakyStorage, 1: InMemoryStorage}
+     */
+    private function flaky(string $failing, int $failures = 1): array
+    {
+        $inner = new InMemoryStorage();
+
+        return [new FlakyStorage($inner, $failing, $failures), $inner];
+    }
+
+    private function statusOf(InMemoryStorage $storage, string $id): OutboxStatus
+    {
+        $message = $storage->getById($id);
+        Assert::notNull($message);
+
+        return $message->getStatus();
+    }
+
+    public function aFailingMarkFailedReleasesTheRestOfTheBatch(): void
+    {
+        [$storage, $inner] = $this->flaky(FlakyStorage::MARK_FAILED);
+        $inner->save($this->pending(id: 'spent', type: 'ab.exposure', payload: '{"experiment":"x"}', attempts: 3));
+        $inner->save($this->pending(id: 'fresh', type: 'ab.exposure', payload: '{"experiment":"x"}'));
+        $inner->save($this->pending(id: 'other-spent', type: 'ab.conversion', payload: '{"experiment":"x","goal":"buy"}', attempts: 3));
+        $factory = new RecordingWriterFactory();
+
+        $thrown = null;
+
+        try {
+            $this->exporter($factory, storage: $storage)->export();
+        } catch (StorageDown $e) {
+            $thrown = $e;
+        }
+
+        Assert::notNull($thrown);
+        Assert::same($thrown->getMessage(), 'markFailed() failed');
+        // Nothing reached ClickHouse: the batch aborted before any group.
+        Assert::same($factory->created, []);
+        // The message whose write failed was retried by the release and
+        // the storage was back by then.
+        Assert::same($this->statusOf($inner, 'spent'), OutboxStatus::Failed);
+        Assert::same($this->statusOf($inner, 'fresh'), OutboxStatus::Pending);
+        Assert::same($inner->getById('fresh')?->getAttempts(), 0);
+        Assert::same($this->statusOf($inner, 'other-spent'), OutboxStatus::Failed);
+    }
+
+    public function aFailingSaveOfANotReadyMessageReleasesTheRestOfTheBatch(): void
+    {
+        $inner = new InMemoryStorage();
+        $storage = new PlainFlakyStorage(new FlakyStorage($inner, FlakyStorage::SAVE));
+        $inner->save($this->pending(
+            id: 'backing-off',
+            type: 'ab.exposure',
+            payload: '{"experiment":"x"}',
+            attempts: 1,
+            lastAttemptAt: (new \DateTimeImmutable(self::NOW))->modify('-5 seconds'),
+        ));
+        $inner->save($this->pending(id: 'fresh', type: 'ab.exposure', payload: '{"experiment":"x"}'));
+
+        $thrown = null;
+
+        try {
+            $this->exporter(new RecordingWriterFactory(), storage: $storage)->export();
+        } catch (StorageDown $e) {
+            $thrown = $e;
+        }
+
+        Assert::notNull($thrown);
+        Assert::same($thrown->getMessage(), 'save() failed');
+        Assert::same($this->statusOf($inner, 'backing-off'), OutboxStatus::Pending);
+        Assert::same($inner->getById('backing-off')?->getAttempts(), 1);
+        Assert::same($this->statusOf($inner, 'fresh'), OutboxStatus::Pending);
+        Assert::same($inner->getById('fresh')?->getAttempts(), 0);
+    }
+
+    public function aFailingBatchAcknowledgementPutsTheWrittenGroupBackAsPending(): void
+    {
+        [$storage, $inner] = $this->flaky(FlakyStorage::MARK_PUBLISHED_BATCH);
+        $inner->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
+        $inner->save($this->pending(id: 'b', type: 'ab.exposure', payload: '{"experiment":"y"}'));
+        $inner->save($this->pending(id: 'c', type: 'ab.conversion', payload: '{"experiment":"x","goal":"buy"}'));
+        $factory = new RecordingWriterFactory();
+
+        $thrown = null;
+
+        try {
+            $this->exporter($factory, storage: $storage)->export();
+        } catch (StorageDown $e) {
+            $thrown = $e;
+        }
+
+        Assert::notNull($thrown);
+        Assert::same($thrown->getMessage(), 'markPublishedBatch() failed');
+        // The first group's rows reached ClickHouse; the second group
+        // was never written.
+        Assert::count($factory->created, 1);
+        Assert::same($factory->created[0]['table'], 'ab_exposures');
+        // Written but unacknowledged: back to Pending with the attempt
+        // recorded — at-least-once, deduplicated by the event id.
+        Assert::same($this->statusOf($inner, 'a'), OutboxStatus::Pending);
+        Assert::same($inner->getById('a')?->getAttempts(), 1);
+        Assert::same($this->statusOf($inner, 'b'), OutboxStatus::Pending);
+        Assert::same($inner->getById('b')?->getAttempts(), 1);
+        // Never attempted: released as it was claimed.
+        Assert::same($this->statusOf($inner, 'c'), OutboxStatus::Pending);
+        Assert::same($inner->getById('c')?->getAttempts(), 0);
+        Assert::same($storage->writes, ['markPublishedBatch', 'save', 'save', 'save']);
+    }
+
+    public function anAcknowledgedGroupStaysPublishedWhenALaterGroupAborts(): void
+    {
+        $inner = new InMemoryStorage();
+        $storage = new FlakyStorage($inner, FlakyStorage::MARK_PUBLISHED_BATCH, after: 1);
+        $inner->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
+        $inner->save($this->pending(id: 'c', type: 'ab.conversion', payload: '{"experiment":"x","goal":"buy"}'));
+
+        $thrown = null;
+
+        try {
+            $this->exporter(new RecordingWriterFactory(), storage: $storage)->export();
+        } catch (StorageDown $e) {
+            $thrown = $e;
+        }
+
+        Assert::notNull($thrown);
+        // The first group was acknowledged before the second one's
+        // acknowledgement failed: the release must not touch it, or a
+        // delivered message would be delivered again.
+        Assert::same($this->statusOf($inner, 'a'), OutboxStatus::Published);
+        Assert::same($this->statusOf($inner, 'c'), OutboxStatus::Pending);
+        Assert::same($storage->writes, ['markPublishedBatch', 'markPublishedBatch', 'save']);
+    }
+
+    public function aFailingPerMessageAcknowledgementPutsTheWholeGroupBackAsPending(): void
+    {
+        $inner = new InMemoryStorage();
+        $flaky = new FlakyStorage($inner, FlakyStorage::MARK_PUBLISHED);
+        $storage = new PlainFlakyStorage($flaky);
+        $inner->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
+        $inner->save($this->pending(id: 'b', type: 'ab.exposure', payload: '{"experiment":"y"}'));
+
+        $thrown = null;
+
+        try {
+            $this->exporter(new RecordingWriterFactory(), storage: $storage)->export();
+        } catch (StorageDown $e) {
+            $thrown = $e;
+        }
+
+        Assert::notNull($thrown);
+        Assert::same($thrown->getMessage(), 'markPublished() failed');
+        // 'a' failed to acknowledge, so 'b' was never tried: both are
+        // released with the attempt they spent.
+        Assert::same($this->statusOf($inner, 'a'), OutboxStatus::Pending);
+        Assert::same($this->statusOf($inner, 'b'), OutboxStatus::Pending);
+        Assert::same($inner->getById('a')?->getAttempts(), 1);
+        Assert::same($inner->getById('b')?->getAttempts(), 1);
+        Assert::same($flaky->writes, ['markPublished', 'save', 'save']);
+    }
+
+    public function aStorageFailureWhilePersistingAWriteFailurePropagatesAndReleases(): void
+    {
+        [$storage, $inner] = $this->flaky(FlakyStorage::SAVE);
+        $inner->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
+        $inner->save($this->pending(id: 'b', type: 'ab.exposure', payload: '{"experiment":"y"}'));
+        $inner->save($this->pending(id: 'c', type: 'ab.conversion', payload: '{"experiment":"x","goal":"buy"}'));
+        $factory = new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
+
+        // ClickHouse is down AND the storage fails to record that: the caller
+        // sees the storage failure, not the ClickHouse one — the decider only
+        // rules on the latter.
+        $thrown = null;
+
+        try {
+            $this->exporter($factory, storage: $storage)->export();
+        } catch (StorageDown $e) {
+            $thrown = $e;
+        }
+
+        Assert::notNull($thrown);
+        Assert::same($thrown->getMessage(), 'save() failed');
+        Assert::same($this->statusOf($inner, 'a'), OutboxStatus::Pending);
+        Assert::same($inner->getById('a')?->getAttempts(), 1);
+        Assert::same($this->statusOf($inner, 'b'), OutboxStatus::Pending);
+        Assert::same($this->statusOf($inner, 'c'), OutboxStatus::Pending);
+        Assert::same($inner->getById('c')?->getAttempts(), 0);
+    }
+
+    public function aStorageFailureWhilePersistingARouteFailurePropagatesAndReleases(): void
+    {
+        [$storage, $inner] = $this->flaky(FlakyStorage::SAVE);
+        $inner->save($this->pending(id: 'unroutable', type: 'ab.exposure', payload: '{}'));
+        $inner->save($this->pending(id: 'fresh', type: 'ab.exposure', payload: '{"experiment":"x"}'));
+        $decider = new class implements FailureDeciderInterface {
+            public function decide(OutboxMessage $message, \Throwable $e): FailureDecision
+            {
+                return FailureDecision::Retryable;
+            }
+        };
+
+        $thrown = null;
+
+        try {
+            $this->exporter(new RecordingWriterFactory(), decider: $decider, storage: $storage)->export();
+        } catch (StorageDown $e) {
+            $thrown = $e;
+        }
+
+        Assert::notNull($thrown);
+        Assert::same($thrown->getMessage(), 'save() failed');
+        Assert::same($this->statusOf($inner, 'unroutable'), OutboxStatus::Pending);
+        Assert::same($inner->getById('unroutable')?->getAttempts(), 1);
+        Assert::same($this->statusOf($inner, 'fresh'), OutboxStatus::Pending);
+        Assert::same($inner->getById('fresh')?->getAttempts(), 0);
+    }
+
+    public function theReleaseTerminatesAMessageThatArrivedWithNoAttemptsLeft(): void
+    {
+        [$storage, $inner] = $this->flaky(FlakyStorage::MARK_PUBLISHED_BATCH);
+        $inner->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}', attempts: 2));
+        $inner->save($this->pending(id: 'spent', type: 'ab.conversion', payload: '{"experiment":"x","goal":"buy"}', attempts: 3));
+        $logger = new RecordingLogger();
+
+        $thrown = null;
+
+        try {
+            $this->exporter(new RecordingWriterFactory(), logger: $logger, storage: $storage)->export();
+        } catch (StorageDown $e) {
+            $thrown = $e;
+        }
+
+        Assert::notNull($thrown);
+        // 'a' spent its third and last attempt on a write that reached
+        // ClickHouse but was not acknowledged: nothing left to spend, so
+        // the release terminates it rather than saving a zombie Pending.
+        Assert::same($this->statusOf($inner, 'a'), OutboxStatus::Failed);
+        Assert::same($this->statusOf($inner, 'spent'), OutboxStatus::Failed);
+        Assert::same(
+            array_map(static fn(array $r): string => $r['message'], $logger->records),
+            ['ClickHouse outbox message exhausted its retries', 'ClickHouse outbox message exhausted its retries'],
+        );
+        // 'spent' was terminated by the loop before any group ran; 'a'
+        // by the release.
+        Assert::same($logger->records[0]['context'], ['messageId' => 'spent', 'type' => 'ab.conversion', 'attempts' => 3]);
+        Assert::same($logger->records[1]['context'], ['messageId' => 'a', 'type' => 'ab.exposure', 'attempts' => 3]);
+    }
+
+    public function aReleaseThatFailsIsLoggedAndTheOriginalExceptionStillPropagates(): void
+    {
+        [$storage, $inner] = $this->flaky(FlakyStorage::SAVE, failures: PHP_INT_MAX);
+        $inner->save($this->pending(
+            id: 'backing-off',
+            type: 'ab.exposure',
+            payload: '{"experiment":"x"}',
+            attempts: 1,
+            lastAttemptAt: (new \DateTimeImmutable(self::NOW))->modify('-5 seconds'),
+        ));
+        $inner->save($this->pending(id: 'fresh', type: 'ab.exposure', payload: '{"experiment":"x"}'));
+        $inner->save($this->pending(id: 'spent', type: 'ab.exposure', payload: '{"experiment":"x"}', attempts: 3));
+        $plain = new PlainFlakyStorage($storage);
+        $logger = new RecordingLogger();
+
+        $thrown = null;
+
+        try {
+            $this->exporter(new RecordingWriterFactory(), logger: $logger, storage: $plain)->export();
+        } catch (StorageDown $e) {
+            $thrown = $e;
+        }
+
+        Assert::notNull($thrown);
+        Assert::same($thrown->getMessage(), 'save() failed');
+        // A storage that never recovers cannot be told anything: the
+        // rows stay Processing, and each failed release is one error line
+        // — the exception the caller gets is still the first one.
+        Assert::same($this->statusOf($inner, 'backing-off'), OutboxStatus::Processing);
+        Assert::same($this->statusOf($inner, 'fresh'), OutboxStatus::Processing);
+        // markFailed() works, so the exhausted one is terminated even now.
+        Assert::same($this->statusOf($inner, 'spent'), OutboxStatus::Failed);
+        $errors = array_values(array_filter($logger->records, static fn(array $r): bool => $r['level'] === 'error'));
+        Assert::count($errors, 2);
+        Assert::same($errors[0]['message'], 'Failed to release a claimed ClickHouse outbox message');
+        Assert::same($errors[0]['context'], [
+            'messageId' => 'backing-off',
+            'type' => 'ab.exposure',
+            'exception' => StorageDown::class,
+            'error' => 'save() failed',
+        ]);
+        Assert::same($errors[1]['context']['messageId'], 'fresh');
+    }
+
+    public function aSuccessfulRunPerformsNoRelease(): void
+    {
+        [$storage, $inner] = $this->flaky(FlakyStorage::SAVE, failures: 0);
+        $inner->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
+        $inner->save($this->pending(id: 'spent', type: 'ab.conversion', payload: '{"experiment":"x","goal":"buy"}', attempts: 3));
+
+        $result = $this->exporter(new RecordingWriterFactory(), storage: $storage)->export();
+
+        Assert::same($result->published, 1);
+        Assert::same($result->terminalFailed, 1);
+        Assert::same($storage->writes, ['markFailed', 'markPublishedBatch']);
+    }
+
+    /**
+     * Whichever write fails first — and whether or not the storage comes back
+     * for the release — a batch never leaves a message in `Processing` that
+     * the release could have moved: after one failure the storage recovers
+     * and every claimed row is Pending, Published or Failed.
+     *
+     * @param list<array{attempts: int, routable: bool, type: string}> $specs
+     */
+    #[Property(runs: 400, timeoutMs: 5000)]
+    public function anAbortedBatchLeavesNothingInProcessingOnceTheStorageIsBack(array $specs, string $failing, bool $clickHouseDown, bool $batchStorage): void
+    {
+        // 'acknowledge' is whichever acknowledgement this storage kind uses:
+        // drawing the two methods separately would waste half the
+        // acknowledgement runs on a method the exporter never calls.
+        if ($failing === 'acknowledge') {
+            $failing = $batchStorage ? FlakyStorage::MARK_PUBLISHED_BATCH : FlakyStorage::MARK_PUBLISHED;
+        }
+
+        $inner = new InMemoryStorage();
+        $flaky = new FlakyStorage($inner, $failing);
+        $storage = $batchStorage ? $flaky : new PlainFlakyStorage($flaky);
+
+        foreach ($specs as $index => $spec) {
+            $inner->save($this->pending(
+                id: 'm' . $index,
+                type: $spec['type'],
+                payload: $spec['routable'] ? '{"experiment":"x"}' : '{}',
+                attempts: $spec['attempts'],
+                lastAttemptAt: $spec['attempts'] === 0 ? null : (new \DateTimeImmutable(self::NOW))->modify('-90 seconds'),
+            ));
+        }
+
+        $factory = $clickHouseDown
+            ? new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('down')])
+            : new RecordingWriterFactory();
+
+        $aborted = false;
+
+        try {
+            $this->exporter($factory, storage: $storage)->export();
+        } catch (StorageDown) {
+            $aborted = true;
+        }
+
+        // Measured over 400 runs: aborted 20–27%, never reached 73–80%, on
+        // save 6%, on markFailed 8%, on an acknowledgement 5.5%. Each gate is
+        // about half its share, so a seed cannot trip it.
+        Classify::cover($aborted, 'batch aborted', 10.0);
+        Classify::cover(!$aborted, 'failing write never reached', 40.0);
+        Classify::cover($aborted && $failing === FlakyStorage::SAVE, 'aborted on save', 3.0);
+        Classify::cover($aborted && $failing === FlakyStorage::MARK_FAILED, 'aborted on markFailed', 3.0);
+        Classify::cover($aborted && \in_array($failing, [FlakyStorage::MARK_PUBLISHED, FlakyStorage::MARK_PUBLISHED_BATCH], strict: true), 'aborted on acknowledgement', 2.5);
+
+        foreach ($specs as $index => $spec) {
+            $message = $inner->getById('m' . $index);
+            Assert::notNull($message);
+            Assert::true($message->getStatus() !== OutboxStatus::Processing);
+
+            if ($spec['type'] !== 'ab.exposure') {
+                // Never claimed, so never touched — not even by the release.
+                Assert::same($message->getStatus(), OutboxStatus::Pending);
+                Assert::same($message->getAttempts(), $spec['attempts']);
+
+                continue;
+            }
+
+            if ($message->getStatus() === OutboxStatus::Pending) {
+                // Never a zombie: Pending always has something left to spend.
+                Assert::true($message->getAttempts() < 3);
+            }
+        }
+    }
+
+    /** @return array<string, ArbitraryInterface> */
+    public static function anAbortedBatchLeavesNothingInProcessingOnceTheStorageIsBackGenerators(): array
+    {
+        return [
+            'specs' => Gen::arrayOf(
+                Gen::record([
+                    'type' => Gen::elements(['ab.exposure', 'other.type']),
+                    'routable' => Gen::bool(),
+                    'attempts' => Gen::intBetween(0, 3),
+                ]),
+                maxSize: 6,
+            ),
+            // save() is only reached through a retryable failure and an
+            // acknowledgement only when ClickHouse is up, so both are drawn
+            // more often than markFailed(); the gates above were measured
+            // with this weighting.
+            'failing' => Gen::frequency([
+                [3, Gen::constant(FlakyStorage::SAVE)],
+                [1, Gen::constant(FlakyStorage::MARK_FAILED)],
+                [2, Gen::constant('acknowledge')],
+            ]),
+            'clickHouseDown' => Gen::bool(),
+            'batchStorage' => Gen::bool(),
+        ];
+    }
+
+    /** @return iterable<string, array{list<array{attempts: int, routable: bool, type: string}>, string, bool, bool}> */
+    public static function anAbortedBatchLeavesNothingInProcessingOnceTheStorageIsBackExamples(): iterable
+    {
+        yield 'acknowledgement fails after the write' => [
+            [['type' => 'ab.exposure', 'routable' => true, 'attempts' => 0], ['type' => 'ab.exposure', 'routable' => true, 'attempts' => 2]],
+            'acknowledge',
+            false,
+            true,
+        ];
+        yield 'save fails while recording a ClickHouse outage' => [
+            [['type' => 'ab.exposure', 'routable' => true, 'attempts' => 0], ['type' => 'ab.exposure', 'routable' => false, 'attempts' => 0]],
+            FlakyStorage::SAVE,
+            true,
+            true,
+        ];
+        yield 'markFailed fails on an exhausted message ahead of a fresh one' => [
+            [['type' => 'ab.exposure', 'routable' => true, 'attempts' => 3], ['type' => 'ab.exposure', 'routable' => true, 'attempts' => 0]],
+            FlakyStorage::MARK_FAILED,
+            false,
+            false,
+        ];
+        yield 'empty batch' => [[], FlakyStorage::SAVE, false, true];
+    }
+
     private function exporter(
         ClickHouseWriterFactoryInterface $factory,
         ?FailureDeciderInterface $decider = null,
@@ -783,8 +1215,8 @@ final class ClickHouseOutboxExporterTest
         ?StorageInterface $storage = null,
     ): ClickHouseOutboxExporter {
         $now = self::NOW;
-        $clock = new class ($now) implements ClockInterface {
-            public function __construct(private readonly string $now) {}
+        $clock = new readonly class ($now) implements ClockInterface {
+            public function __construct(private string $now) {}
 
             public function now(): \DateTimeImmutable
             {
