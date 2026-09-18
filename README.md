@@ -141,7 +141,15 @@ CREATE TABLE ab_exposures (
 ) ENGINE = ReplacingMergeTree ORDER BY event_id;
 ```
 
-### Failure semantics
+**The injected event id is the anchor this relies on.** Every retry path
+inserts the same rows again — a ClickHouse outage, and since 1.6.0 also a
+group whose rows reached ClickHouse but whose acknowledgement in the outbox
+storage failed — and the only reason a second insert is harmless is that the
+row carries a value the table's `ORDER BY` collapses on. Disabling the
+injection (`'eventIdColumn' => null`) removes that anchor: the retry then
+produces a duplicate nothing merges away. Disable it only when the payload
+carries a stable id of its own, and make *that* column the `ORDER BY` of the
+target table.
 
 | Failure | Decision | Effect |
 |---|---|---|
@@ -275,7 +283,8 @@ one of them for having no route. Configure routes before running
 'rasuvaeff/yii3-outbox-clickhouse' => [
     'batchSize' => 1000,
     'fetchLimit' => 1000,
-    'eventIdColumn' => 'event_id',   // null: take the column from the payload like any other
+    'eventIdColumn' => 'event_id',   // null: take the column from the payload like any other —
+                                     // only when that payload column is the table's dedup key
     'routes' => ['ab.exposure' => ['table' => 'ab_exposures', 'columns' => ['event_id', 'experiment']]],
     'retry' => ['maxAttempts' => 5, 'delaySeconds' => 30],
 ],

@@ -71,6 +71,11 @@ Needs a PSR-18 client + PSR-17 factories (e.g. guzzlehttp/guzzle).
   an optional third callable receiving every `ClickHouseExportResult`.
 - `params['eventIdColumn'] = null` disables id injection (the column is then
   read from the payload); only an absent key means the `event_id` default.
+  The injected id is the dedup anchor every retry path relies on (ClickHouse
+  outage; since 1.6.0 also a written-but-unacknowledged group): disable it
+  only when a payload column is a stable id, and make that column the
+  target table's `ORDER BY` — otherwise a retry inserts an uncollapsible
+  duplicate.
 - DI does not bind `ClickHouseConfig`; its constructor defaults to
   `127.0.0.1`/`default`, so an app without a binding silently targets
   localhost. Bind it (or install `rasuvaeff/yii3-clickhouse-toolkit`).
