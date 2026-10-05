@@ -14,7 +14,7 @@ use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseExportResult;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExporter;
 use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseOutboxExportRunner;
 use Rasuvaeff\Yii3OutboxClickHouse\MapClickHouseMessageRouter;
-use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\RecordingWriterFactory;
+use Rasuvaeff\Yii3OutboxClickHouse\Tests\Support\Writers;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Expect;
@@ -45,7 +45,7 @@ final class ClickHouseOutboxExportRunnerTest
             router: new MapClickHouseMessageRouter(routes: ['ab.exposure' => ['table' => 't', 'columns' => ['event_id', 'experiment']]]),
             retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 30),
             clock: $clock,
-            writerFactory: new RecordingWriterFactory(),
+            writerFactory: (new Writers())->factory(),
         );
     }
 

@@ -17,7 +17,7 @@ use Rasuvaeff\Yii3OutboxClickHouse\DefaultFailureDecider;
 use Rasuvaeff\Yii3OutboxClickHouse\FailureDeciderInterface;
 use Rasuvaeff\Yii3OutboxClickHouse\JsonPayloadDecoder;
 use Rasuvaeff\Yii3OutboxClickHouse\MapClickHouseMessageRouter;
-use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\RecordingWriterFactory;
+use Rasuvaeff\Yii3OutboxClickHouse\Tests\Support\Writers;
 use Testo\Assert;
 use Testo\Codecov\CoversNothing;
 use Testo\Expect;
@@ -96,7 +96,7 @@ final class ConfigWiringTest
             new InMemoryStorage(),
             $this->router(['routes' => self::ROUTES]),
             new StaticClock(new \DateTimeImmutable('2026-08-20T12:00:00+00:00')),
-            new RecordingWriterFactory(),
+            (new Writers())->factory(),
             new DefaultFailureDecider(),
         );
 
@@ -117,7 +117,7 @@ final class ConfigWiringTest
             new InMemoryStorage(),
             $this->router(['routes' => self::ROUTES]),
             new StaticClock(new \DateTimeImmutable('2026-08-20T12:00:00+00:00')),
-            new RecordingWriterFactory(),
+            (new Writers())->factory(),
             new DefaultFailureDecider(),
         ));
 
