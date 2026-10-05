@@ -12,6 +12,9 @@ use Rasuvaeff\PropertyTesting\ArbitraryInterface;
 use Rasuvaeff\PropertyTesting\Classify;
 use Rasuvaeff\PropertyTesting\Gen;
 use Rasuvaeff\PropertyTesting\Property;
+use Rasuvaeff\Understudy\Arg;
+use Rasuvaeff\Understudy\Invocation;
+use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Outbox\InMemoryStorage;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
@@ -28,9 +31,8 @@ use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\BatchAcknowledgingStorage;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\FlakyStorage;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\PlainFlakyStorage;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\PlainStorage;
-use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\RecordingLogger;
-use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\RecordingWriterFactory;
 use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\StorageDown;
+use Rasuvaeff\Yii3OutboxClickHouse\Tests\Support\Writers;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Expect;
@@ -50,6 +52,8 @@ final class ClickHouseOutboxExporterTest
 
     private InMemoryStorage $storage;
 
+    private LoggerInterface $loggerDouble;
+
     #[BeforeTest]
     public function setUp(): void
     {
@@ -58,7 +62,7 @@ final class ClickHouseOutboxExporterTest
 
     public function returnsEmptyResultWhenNothingPending(): void
     {
-        $result = $this->exporter(new RecordingWriterFactory())->export();
+        $result = $this->exporter((new Writers())->factory())->export();
 
         Assert::same($result->totalHandled(), 0);
         Assert::same($result->groupCount(), 0);
@@ -69,15 +73,15 @@ final class ClickHouseOutboxExporterTest
     {
         $this->storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
         $this->storage->save($this->pending(id: 'b', type: 'ab.exposure', payload: '{"experiment":"y"}'));
-        $factory = new RecordingWriterFactory();
+        $writers = new Writers();
 
-        $result = $this->exporter($factory)->export();
+        $result = $this->exporter($writers->factory())->export();
 
         Assert::same($result->published, 2);
         Assert::same($result->groupCount(), 1);
-        Assert::count($factory->created, 1);
-        Assert::same($factory->created[0]['table'], 'ab_exposures');
-        Assert::same($factory->writers['ab_exposures']->rows, [
+        Assert::count($writers->created(), 1);
+        Assert::same($writers->created()[0]['table'], 'ab_exposures');
+        Assert::same($writers->rows('ab_exposures'), [
             ['event_id' => 'a', 'experiment' => 'x'],
             ['event_id' => 'b', 'experiment' => 'y'],
         ]);
@@ -97,7 +101,7 @@ final class ClickHouseOutboxExporterTest
         $storage->save($this->pending(id: 'b', type: 'ab.exposure', payload: '{"experiment":"y"}'));
         $storage->save($this->pending(id: 'c', type: 'ab.conversion', payload: '{"experiment":"x","goal":"buy"}'));
 
-        $result = $this->exporter(new RecordingWriterFactory(), storage: $storage)->export();
+        $result = $this->exporter((new Writers())->factory(), storage: $storage)->export();
 
         Assert::same($result->published, 3);
         Assert::same($storage->batches, [['a', 'b'], ['c']]);
@@ -112,7 +116,7 @@ final class ClickHouseOutboxExporterTest
         $storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
         $storage->save($this->pending(id: 'b', type: 'ab.exposure', payload: '{"experiment":"y"}'));
 
-        $result = $this->exporter(new RecordingWriterFactory(), storage: $storage)->export();
+        $result = $this->exporter((new Writers())->factory(), storage: $storage)->export();
 
         Assert::same($result->published, 2);
         Assert::same($storage->acknowledged, ['a', 'b']);
@@ -125,9 +129,9 @@ final class ClickHouseOutboxExporterTest
         $storage = new BatchAcknowledgingStorage();
         $storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
         $storage->save($this->pending(id: 'b', type: 'ab.exposure', payload: '{"experiment":"y"}'));
-        $factory = new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('boom')]);
+        $writers = new Writers(failTables: ['ab_exposures' => new ClickHouseWriteException('boom')]);
 
-        $result = $this->exporter($factory, storage: $storage)->export();
+        $result = $this->exporter($writers->factory(), storage: $storage)->export();
 
         Assert::same($result->published, 0);
         Assert::same($result->retryScheduled, 2);
@@ -140,7 +144,7 @@ final class ClickHouseOutboxExporterTest
     {
         $this->storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
 
-        $result = $this->exporter(new RecordingWriterFactory())->exportOrFail();
+        $result = $this->exporter((new Writers())->factory())->exportOrFail();
 
         Assert::same($result->published, 1);
         Assert::false($result->hasFailures());
@@ -150,15 +154,15 @@ final class ClickHouseOutboxExporterTest
     {
         $this->storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
         $this->storage->save($this->pending(id: 'b', type: 'ab.conversion', payload: '{"experiment":"x","goal":"buy"}'));
-        $factory = new RecordingWriterFactory();
+        $writers = new Writers();
 
-        $result = $this->exporter($factory)->export();
+        $result = $this->exporter($writers->factory())->export();
 
         Assert::same($result->published, 2);
         Assert::same($result->groupCount(), 2);
-        Assert::count($factory->created, 2);
-        Assert::count($factory->writers['ab_exposures']->rows, 1);
-        Assert::count($factory->writers['ab_conversions']->rows, 1);
+        Assert::count($writers->created(), 2);
+        Assert::count($writers->rows('ab_exposures'), 1);
+        Assert::count($writers->rows('ab_conversions'), 1);
     }
 
     /**
@@ -177,14 +181,14 @@ final class ClickHouseOutboxExporterTest
             lastAttemptAt: new \DateTimeImmutable(self::NOW),
         ));
         $this->storage->save($this->pending(id: 'ready', type: 'ab.exposure', payload: '{"experiment":"y"}'));
-        $factory = new RecordingWriterFactory();
+        $writers = new Writers();
 
-        $result = $this->exporter($factory)->export();
+        $result = $this->exporter($writers->factory())->export();
 
         Assert::same($result->terminalFailed, 1);
         Assert::same($result->published, 1);
         Assert::same($this->storage->getById('exhausted')?->getStatus(), OutboxStatus::Failed);
-        Assert::same($factory->writers['ab_exposures']->rows, [['event_id' => 'ready', 'experiment' => 'y']]);
+        Assert::same($writers->rows('ab_exposures'), [['event_id' => 'ready', 'experiment' => 'y']]);
     }
 
     /**
@@ -200,13 +204,13 @@ final class ClickHouseOutboxExporterTest
             attempts: 1,
             lastAttemptAt: new \DateTimeImmutable(self::NOW),
         ));
-        $factory = new RecordingWriterFactory();
+        $writers = new Writers();
 
-        $result = $this->exporter($factory)->export();
+        $result = $this->exporter($writers->factory())->export();
 
         Assert::same($result->skipped, 0);
         Assert::same($result->totalHandled(), 0);
-        Assert::same($factory->created, []);
+        Assert::same($writers->created(), []);
         $message = $this->storage->getById('a');
         Assert::notNull($message);
         Assert::same($message->getStatus(), OutboxStatus::Pending);
@@ -228,26 +232,26 @@ final class ClickHouseOutboxExporterTest
             attempts: 1,
             lastAttemptAt: new \DateTimeImmutable(self::NOW),
         ));
-        $factory = new RecordingWriterFactory();
+        $writers = new Writers();
 
-        $result = $this->exporter($factory, storage: $storage)->export();
+        $result = $this->exporter($writers->factory(), storage: $storage)->export();
 
         Assert::same($result->skipped, 1);
         Assert::same($result->totalHandled(), 0);
-        Assert::same($factory->created, []);
+        Assert::same($writers->created(), []);
         Assert::same($storage->getById('a')?->getStatus(), OutboxStatus::Pending);
     }
 
     public function terminalRouteFailureMarksMessageFailed(): void
     {
         $this->storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{}'));
-        $factory = new RecordingWriterFactory();
+        $writers = new Writers();
 
-        $result = $this->exporter($factory)->export();
+        $result = $this->exporter($writers->factory())->export();
 
         Assert::same($result->terminalFailed, 1);
         Assert::same($result->published, 0);
-        Assert::same($factory->created, []);
+        Assert::same($writers->created(), []);
         $message = $this->storage->getById('a');
         Assert::notNull($message);
         Assert::same($message->getStatus(), OutboxStatus::Failed);
@@ -256,9 +260,9 @@ final class ClickHouseOutboxExporterTest
     public function retryableWriteFailureKeepsMessagePendingWithIncrementedAttempts(): void
     {
         $this->storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
-        $factory = new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
+        $writers = new Writers(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
 
-        $result = $this->exporter($factory)->export();
+        $result = $this->exporter($writers->factory())->export();
 
         Assert::same($result->retryScheduled, 1);
         Assert::same($result->published, 0);
@@ -272,10 +276,10 @@ final class ClickHouseOutboxExporterTest
     public function exportOrFailThrowsWithResultWhenBatchHasFailures(): void
     {
         $this->storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
-        $factory = new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
+        $writers = new Writers(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
 
         try {
-            $this->exporter($factory)->exportOrFail();
+            $this->exporter($writers->factory())->exportOrFail();
             Assert::fail('Expected ClickHouseExportException to be thrown');
         } catch (ClickHouseExportException $e) {
             Assert::same($e->getResult()->retryScheduled, 1);
@@ -292,9 +296,9 @@ final class ClickHouseOutboxExporterTest
         for ($i = 1; $i <= 5; ++$i) {
             $this->storage->save($this->pending(id: 'm' . $i, type: 'ab.exposure', payload: '{"experiment":"x"}'));
         }
-        $factory = new RecordingWriterFactory();
+        $writers = new Writers();
 
-        $result = $this->exporter($factory)->export(limit: 2);
+        $result = $this->exporter($writers->factory())->export(limit: 2);
 
         Assert::same($result->published, 2);
         Assert::count($this->storage->findPending(), 3);
@@ -304,14 +308,14 @@ final class ClickHouseOutboxExporterTest
     {
         Expect::exception(InvalidArgumentException::class);
 
-        $this->exporter(new RecordingWriterFactory(), fetchLimit: 0);
+        $this->exporter((new Writers())->factory(), fetchLimit: 0);
     }
 
     public function allowsFetchLimitOfOne(): void
     {
         $this->storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
 
-        $result = $this->exporter(new RecordingWriterFactory(), fetchLimit: 1)->export();
+        $result = $this->exporter((new Writers())->factory(), fetchLimit: 1)->export();
 
         Assert::same($result->published, 1);
     }
@@ -327,13 +331,13 @@ final class ClickHouseOutboxExporterTest
             lastAttemptAt: new \DateTimeImmutable(self::NOW),
         ));
         $storage->save($this->pending(id: 'ready', type: 'ab.exposure', payload: '{"experiment":"y"}'));
-        $factory = new RecordingWriterFactory();
+        $writers = new Writers();
 
-        $result = $this->exporter($factory, storage: $storage)->export();
+        $result = $this->exporter($writers->factory(), storage: $storage)->export();
 
         Assert::same($result->skipped, 1);
         Assert::same($result->published, 1);
-        Assert::same($factory->writers['ab_exposures']->rows, [['event_id' => 'ready', 'experiment' => 'y']]);
+        Assert::same($writers->rows('ab_exposures'), [['event_id' => 'ready', 'experiment' => 'y']]);
     }
 
     /**
@@ -351,52 +355,28 @@ final class ClickHouseOutboxExporterTest
             lastAttemptAt: new \DateTimeImmutable(self::NOW),
         ));
         $this->storage->save($this->pending(id: 'ready', type: 'ab.exposure', payload: '{"experiment":"y"}'));
-        $factory = new RecordingWriterFactory();
+        $writers = new Writers();
 
-        $result = $this->exporter($factory, fetchLimit: 1)->export();
+        $result = $this->exporter($writers->factory(), fetchLimit: 1)->export();
 
         Assert::same($result->skipped, 0);
         Assert::same($result->published, 1);
-        Assert::same($factory->writers['ab_exposures']->rows, [['event_id' => 'ready', 'experiment' => 'y']]);
+        Assert::same($writers->rows('ab_exposures'), [['event_id' => 'ready', 'experiment' => 'y']]);
         Assert::same($this->storage->getById('not-ready')?->getStatus(), OutboxStatus::Pending);
     }
 
     public function logsRouteFailureWithContext(): void
     {
         $this->storage->save($this->pending(id: 'bad', type: 'ab.exposure', payload: '{}'));
-        $logged = [];
-        $logger = new class ($logged) implements LoggerInterface {
-            public function __construct(private array &$logged) {}
+        $logger = $this->logger();
 
-            public function emergency(string|\Stringable $message, array $context = []): void {}
+        $this->exporter((new Writers())->factory(), logger: $logger)->export();
 
-            public function alert(string|\Stringable $message, array $context = []): void {}
-
-            public function critical(string|\Stringable $message, array $context = []): void {}
-
-            public function error(string|\Stringable $message, array $context = []): void {}
-
-            public function warning(string|\Stringable $message, array $context = []): void
-            {
-                $this->logged[] = ['message' => $message, 'context' => $context];
-            }
-
-            public function notice(string|\Stringable $message, array $context = []): void {}
-
-            public function info(string|\Stringable $message, array $context = []): void {}
-
-            public function debug(string|\Stringable $message, array $context = []): void {}
-
-            public function log(mixed $level, string|\Stringable $message, array $context = []): void {}
-        };
-
-        $this->exporter(new RecordingWriterFactory(), logger: $logger)->export();
-
-        Assert::count($logged, 1);
-        Assert::same($logged[0]['message'], 'ClickHouse outbox route failed');
-        Assert::same($logged[0]['context']['messageId'], 'bad');
-        Assert::same($logged[0]['context']['type'], 'ab.exposure');
-        Assert::true(is_string($logged[0]['context']['error']));
+        Assert::count($this->logRecords(), 1);
+        Assert::same($this->logRecords()[0]['message'], 'ClickHouse outbox route failed');
+        Assert::same($this->logRecords()[0]['context']['messageId'], 'bad');
+        Assert::same($this->logRecords()[0]['context']['type'], 'ab.exposure');
+        Assert::true(is_string($this->logRecords()[0]['context']['error']));
     }
 
     public function retryableRouteFailureSchedulesRetryAndKeepsMessagePending(): void
@@ -404,7 +384,7 @@ final class ClickHouseOutboxExporterTest
         $this->storage->save($this->pending(id: 'first-bad', type: 'ab.exposure', payload: '{}'));
         $this->storage->save($this->pending(id: 'good', type: 'ab.exposure', payload: '{"experiment":"x"}'));
 
-        $result = $this->exporter(new RecordingWriterFactory(), decider: $this->alwaysRetryable())->export();
+        $result = $this->exporter((new Writers())->factory(), decider: $this->alwaysRetryable())->export();
 
         Assert::same($result->retryScheduled, 1);
         Assert::same($result->published, 1);
@@ -417,7 +397,7 @@ final class ClickHouseOutboxExporterTest
     {
         $this->storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
 
-        $result = $this->exporter(new RecordingWriterFactory())->export();
+        $result = $this->exporter((new Writers())->factory())->export();
 
         Assert::count($result->groups, 1);
         Assert::same($result->groups[0]->published, 1);
@@ -429,9 +409,9 @@ final class ClickHouseOutboxExporterTest
     public function terminalWriteFailureMarksMessageFailed(): void
     {
         $this->storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
-        $factory = new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
+        $writers = new Writers(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
 
-        $result = $this->exporter($factory, decider: $this->alwaysTerminal())->export();
+        $result = $this->exporter($writers->factory(), decider: $this->alwaysTerminal())->export();
 
         Assert::same($result->terminalFailed, 1);
         Assert::same($result->retryScheduled, 0);
@@ -444,47 +424,23 @@ final class ClickHouseOutboxExporterTest
     public function logsGroupFailureWithContext(): void
     {
         $this->storage->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
-        $factory = new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
-        $logged = [];
-        $logger = new class ($logged) implements LoggerInterface {
-            public function __construct(private array &$logged) {}
+        $writers = new Writers(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
+        $logger = $this->logger();
 
-            public function emergency(string|\Stringable $message, array $context = []): void {}
+        $this->exporter($writers->factory(), logger: $logger)->export();
 
-            public function alert(string|\Stringable $message, array $context = []): void {}
-
-            public function critical(string|\Stringable $message, array $context = []): void {}
-
-            public function error(string|\Stringable $message, array $context = []): void {}
-
-            public function warning(string|\Stringable $message, array $context = []): void
-            {
-                $this->logged[] = ['message' => $message, 'context' => $context];
-            }
-
-            public function notice(string|\Stringable $message, array $context = []): void {}
-
-            public function info(string|\Stringable $message, array $context = []): void {}
-
-            public function debug(string|\Stringable $message, array $context = []): void {}
-
-            public function log(mixed $level, string|\Stringable $message, array $context = []): void {}
-        };
-
-        $this->exporter($factory, logger: $logger)->export();
-
-        Assert::count($logged, 1);
-        Assert::same($logged[0]['message'], 'ClickHouse outbox export group failed');
-        Assert::same($logged[0]['context']['table'], 'ab_exposures');
-        Assert::same($logged[0]['context']['messageCount'], 1);
-        Assert::true(is_string($logged[0]['context']['error']));
+        Assert::count($this->logRecords(), 1);
+        Assert::same($this->logRecords()[0]['message'], 'ClickHouse outbox export group failed');
+        Assert::same($this->logRecords()[0]['context']['table'], 'ab_exposures');
+        Assert::same($this->logRecords()[0]['context']['messageCount'], 1);
+        Assert::true(is_string($this->logRecords()[0]['context']['error']));
     }
 
     public function accumulatesRetryAndTerminalAcrossGroups(): void
     {
         $this->storage->save($this->pending(id: 'exp', type: 'ab.exposure', payload: '{"experiment":"x"}'));
         $this->storage->save($this->pending(id: 'conv', type: 'ab.conversion', payload: '{"experiment":"x","goal":"buy"}'));
-        $factory = new RecordingWriterFactory(failTables: [
+        $writers = new Writers(failTables: [
             'ab_exposures' => new ClickHouseWriteException('down'),
             'ab_conversions' => new ClickHouseWriteException('down'),
         ]);
@@ -496,13 +452,53 @@ final class ClickHouseOutboxExporterTest
             }
         };
 
-        $result = $this->exporter($factory, decider: $decider)->export();
+        $result = $this->exporter($writers->factory(), decider: $decider)->export();
 
         Assert::same($result->retryScheduled, 1);
         Assert::same($result->terminalFailed, 1);
         Assert::same($result->published, 0);
         Assert::same($result->groups[0]->terminalFailed, 1);
         Assert::same($result->groups[1]->terminalFailed, 0);
+    }
+
+    /**
+     * A PSR-3 double capturing the two levels the exporter actually logs at,
+     * merged back into one ordered record list by call sequence.
+     */
+    private function logger(): LoggerInterface
+    {
+        return $this->loggerDouble = Understudy::for(LoggerInterface::class);
+    }
+
+    /**
+     * @return list<array{level: string, message: string, context: array<string, mixed>}>
+     */
+    private function logRecords(): array
+    {
+        $records = [
+            ...array_map(
+                static fn(Invocation $call): array => [
+                    'level' => 'warning',
+                    'message' => (string) $call->arg('message'),
+                    'context' => $call->arg('context'),
+                    'sequence' => $call->sequence,
+                ],
+                Understudy::calls(fn() => $this->loggerDouble->warning(Arg::any(), Arg::any())),
+            ),
+            ...array_map(
+                static fn(Invocation $call): array => [
+                    'level' => 'error',
+                    'message' => (string) $call->arg('message'),
+                    'context' => $call->arg('context'),
+                    'sequence' => $call->sequence,
+                ],
+                Understudy::calls(fn() => $this->loggerDouble->error(Arg::any(), Arg::any())),
+            ),
+        ];
+
+        usort($records, static fn(array $a, array $b): int => $a['sequence'] <=> $b['sequence']);
+
+        return $records;
     }
 
     private function alwaysRetryable(): FailureDeciderInterface
@@ -538,13 +534,13 @@ final class ClickHouseOutboxExporterTest
             attempts: 3,
             lastAttemptAt: new \DateTimeImmutable('2026-06-11 12:00:00'),
         ));
-        $factory = new RecordingWriterFactory();
+        $writers = new Writers();
 
-        $result = $this->exporter($factory)->export();
+        $result = $this->exporter($writers->factory())->export();
 
         Assert::same($result->terminalFailed, 1);
         Assert::same($result->skipped, 0);
-        Assert::same($factory->created, []);
+        Assert::same($writers->created(), []);
         $message = $this->storage->getById('a');
         Assert::notNull($message);
         Assert::same($message->getStatus(), OutboxStatus::Failed);
@@ -562,9 +558,9 @@ final class ClickHouseOutboxExporterTest
             attempts: 2,
             lastAttemptAt: new \DateTimeImmutable('2026-06-11 12:00:00'),
         ));
-        $factory = new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
+        $writers = new Writers(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
 
-        $result = $this->exporter($factory)->export();
+        $result = $this->exporter($writers->factory())->export();
 
         Assert::same($result->terminalFailed, 1);
         Assert::same($result->retryScheduled, 0);
@@ -584,9 +580,9 @@ final class ClickHouseOutboxExporterTest
             attempts: 2,
             lastAttemptAt: new \DateTimeImmutable('2026-06-11 12:00:00'),
         ));
-        $factory = new RecordingWriterFactory();
+        $writers = new Writers();
 
-        $result = $this->exporter($factory, decider: $this->alwaysRetryable())->export();
+        $result = $this->exporter($writers->factory(), decider: $this->alwaysRetryable())->export();
 
         Assert::same($result->terminalFailed, 1);
         Assert::same($result->retryScheduled, 0);
@@ -597,7 +593,7 @@ final class ClickHouseOutboxExporterTest
 
     public function logsRetryExhaustionWithContext(): void
     {
-        $logger = new RecordingLogger();
+        $logger = $this->logger();
 
         $this->storage->save($this->pending(
             id: 'a',
@@ -607,11 +603,11 @@ final class ClickHouseOutboxExporterTest
             lastAttemptAt: new \DateTimeImmutable('2026-06-11 12:00:00'),
         ));
 
-        $this->exporter(new RecordingWriterFactory(), logger: $logger)->export();
+        $this->exporter((new Writers())->factory(), logger: $logger)->export();
 
-        Assert::count($logger->records, 1);
-        Assert::same($logger->records[0]['message'], 'ClickHouse outbox message exhausted its retries');
-        Assert::same($logger->records[0]['context'], [
+        Assert::count($this->logRecords(), 1);
+        Assert::same($this->logRecords()[0]['message'], 'ClickHouse outbox message exhausted its retries');
+        Assert::same($this->logRecords()[0]['context'], [
             'messageId' => 'a',
             'type' => 'ab.exposure',
             'attempts' => 3,
@@ -620,7 +616,7 @@ final class ClickHouseOutboxExporterTest
 
     public function logsRetryExhaustionCausedByAWriteFailureWithTheError(): void
     {
-        $logger = new RecordingLogger();
+        $logger = $this->logger();
 
         $this->storage->save($this->pending(
             id: 'a',
@@ -629,12 +625,12 @@ final class ClickHouseOutboxExporterTest
             attempts: 2,
             lastAttemptAt: new \DateTimeImmutable('2026-06-11 12:00:00'),
         ));
-        $factory = new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
+        $writers = new Writers(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
 
-        $this->exporter($factory, logger: $logger)->export();
+        $this->exporter($writers->factory(), logger: $logger)->export();
 
         $exhaustion = array_values(array_filter(
-            $logger->records,
+            $this->logRecords(),
             static fn(array $record): bool => $record['message'] === 'ClickHouse outbox message exhausted its retries',
         ));
 
@@ -688,11 +684,11 @@ final class ClickHouseOutboxExporterTest
             ));
         }
 
-        $factory = $writerBehaviour === 'transient'
-            ? new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('down')])
-            : new RecordingWriterFactory();
+        $writers = $writerBehaviour === 'transient'
+            ? new Writers(failTables: ['ab_exposures' => new ClickHouseWriteException('down')])
+            : new Writers();
 
-        $result = $this->exporter($factory)->export();
+        $result = $this->exporter($writers->factory())->export();
 
         // Each outcome must actually occur across the random phase, or the
         // invariant below is only checked on the paths that happen to be cheap
@@ -804,12 +800,12 @@ final class ClickHouseOutboxExporterTest
         $inner->save($this->pending(id: 'spent', type: 'ab.exposure', payload: '{"experiment":"x"}', attempts: 3));
         $inner->save($this->pending(id: 'fresh', type: 'ab.exposure', payload: '{"experiment":"x"}'));
         $inner->save($this->pending(id: 'other-spent', type: 'ab.conversion', payload: '{"experiment":"x","goal":"buy"}', attempts: 3));
-        $factory = new RecordingWriterFactory();
+        $writers = new Writers();
 
         $thrown = null;
 
         try {
-            $this->exporter($factory, storage: $storage)->export();
+            $this->exporter($writers->factory(), storage: $storage)->export();
         } catch (StorageDown $e) {
             $thrown = $e;
         }
@@ -817,7 +813,7 @@ final class ClickHouseOutboxExporterTest
         Assert::notNull($thrown);
         Assert::same($thrown->getMessage(), 'markFailed() failed');
         // Nothing reached ClickHouse: the batch aborted before any group.
-        Assert::same($factory->created, []);
+        Assert::same($writers->created(), []);
         // The message whose write failed was retried by the release and
         // the storage was back by then.
         Assert::same($this->statusOf($inner, 'spent'), OutboxStatus::Failed);
@@ -842,7 +838,7 @@ final class ClickHouseOutboxExporterTest
         $thrown = null;
 
         try {
-            $this->exporter(new RecordingWriterFactory(), storage: $storage)->export();
+            $this->exporter((new Writers())->factory(), storage: $storage)->export();
         } catch (StorageDown $e) {
             $thrown = $e;
         }
@@ -861,12 +857,12 @@ final class ClickHouseOutboxExporterTest
         $inner->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
         $inner->save($this->pending(id: 'b', type: 'ab.exposure', payload: '{"experiment":"y"}'));
         $inner->save($this->pending(id: 'c', type: 'ab.conversion', payload: '{"experiment":"x","goal":"buy"}'));
-        $factory = new RecordingWriterFactory();
+        $writers = new Writers();
 
         $thrown = null;
 
         try {
-            $this->exporter($factory, storage: $storage)->export();
+            $this->exporter($writers->factory(), storage: $storage)->export();
         } catch (StorageDown $e) {
             $thrown = $e;
         }
@@ -875,8 +871,8 @@ final class ClickHouseOutboxExporterTest
         Assert::same($thrown->getMessage(), 'markPublishedBatch() failed');
         // The first group's rows reached ClickHouse; the second group
         // was never written.
-        Assert::count($factory->created, 1);
-        Assert::same($factory->created[0]['table'], 'ab_exposures');
+        Assert::count($writers->created(), 1);
+        Assert::same($writers->created()[0]['table'], 'ab_exposures');
         // Written but unacknowledged: back to Pending with the attempt
         // recorded — at-least-once, deduplicated by the event id.
         Assert::same($this->statusOf($inner, 'a'), OutboxStatus::Pending);
@@ -899,7 +895,7 @@ final class ClickHouseOutboxExporterTest
         $thrown = null;
 
         try {
-            $this->exporter(new RecordingWriterFactory(), storage: $storage)->export();
+            $this->exporter((new Writers())->factory(), storage: $storage)->export();
         } catch (StorageDown $e) {
             $thrown = $e;
         }
@@ -924,7 +920,7 @@ final class ClickHouseOutboxExporterTest
         $thrown = null;
 
         try {
-            $this->exporter(new RecordingWriterFactory(), storage: $storage)->export();
+            $this->exporter((new Writers())->factory(), storage: $storage)->export();
         } catch (StorageDown $e) {
             $thrown = $e;
         }
@@ -946,7 +942,7 @@ final class ClickHouseOutboxExporterTest
         $inner->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
         $inner->save($this->pending(id: 'b', type: 'ab.exposure', payload: '{"experiment":"y"}'));
         $inner->save($this->pending(id: 'c', type: 'ab.conversion', payload: '{"experiment":"x","goal":"buy"}'));
-        $factory = new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
+        $writers = new Writers(failTables: ['ab_exposures' => new ClickHouseWriteException('down')]);
 
         // ClickHouse is down AND the storage fails to record that: the caller
         // sees the storage failure, not the ClickHouse one — the decider only
@@ -954,7 +950,7 @@ final class ClickHouseOutboxExporterTest
         $thrown = null;
 
         try {
-            $this->exporter($factory, storage: $storage)->export();
+            $this->exporter($writers->factory(), storage: $storage)->export();
         } catch (StorageDown $e) {
             $thrown = $e;
         }
@@ -983,7 +979,7 @@ final class ClickHouseOutboxExporterTest
         $thrown = null;
 
         try {
-            $this->exporter(new RecordingWriterFactory(), decider: $decider, storage: $storage)->export();
+            $this->exporter((new Writers())->factory(), decider: $decider, storage: $storage)->export();
         } catch (StorageDown $e) {
             $thrown = $e;
         }
@@ -1001,12 +997,12 @@ final class ClickHouseOutboxExporterTest
         [$storage, $inner] = $this->flaky(FlakyStorage::MARK_PUBLISHED_BATCH);
         $inner->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}', attempts: 2));
         $inner->save($this->pending(id: 'spent', type: 'ab.conversion', payload: '{"experiment":"x","goal":"buy"}', attempts: 3));
-        $logger = new RecordingLogger();
+        $logger = $this->logger();
 
         $thrown = null;
 
         try {
-            $this->exporter(new RecordingWriterFactory(), logger: $logger, storage: $storage)->export();
+            $this->exporter((new Writers())->factory(), logger: $logger, storage: $storage)->export();
         } catch (StorageDown $e) {
             $thrown = $e;
         }
@@ -1018,13 +1014,13 @@ final class ClickHouseOutboxExporterTest
         Assert::same($this->statusOf($inner, 'a'), OutboxStatus::Failed);
         Assert::same($this->statusOf($inner, 'spent'), OutboxStatus::Failed);
         Assert::same(
-            array_map(static fn(array $r): string => $r['message'], $logger->records),
+            array_map(static fn(array $r): string => $r['message'], $this->logRecords()),
             ['ClickHouse outbox message exhausted its retries', 'ClickHouse outbox message exhausted its retries'],
         );
         // 'spent' was terminated by the loop before any group ran; 'a'
         // by the release.
-        Assert::same($logger->records[0]['context'], ['messageId' => 'spent', 'type' => 'ab.conversion', 'attempts' => 3]);
-        Assert::same($logger->records[1]['context'], ['messageId' => 'a', 'type' => 'ab.exposure', 'attempts' => 3]);
+        Assert::same($this->logRecords()[0]['context'], ['messageId' => 'spent', 'type' => 'ab.conversion', 'attempts' => 3]);
+        Assert::same($this->logRecords()[1]['context'], ['messageId' => 'a', 'type' => 'ab.exposure', 'attempts' => 3]);
     }
 
     public function aReleaseThatFailsIsLoggedAndTheOriginalExceptionStillPropagates(): void
@@ -1040,12 +1036,12 @@ final class ClickHouseOutboxExporterTest
         $inner->save($this->pending(id: 'fresh', type: 'ab.exposure', payload: '{"experiment":"x"}'));
         $inner->save($this->pending(id: 'spent', type: 'ab.exposure', payload: '{"experiment":"x"}', attempts: 3));
         $plain = new PlainFlakyStorage($storage);
-        $logger = new RecordingLogger();
+        $logger = $this->logger();
 
         $thrown = null;
 
         try {
-            $this->exporter(new RecordingWriterFactory(), logger: $logger, storage: $plain)->export();
+            $this->exporter((new Writers())->factory(), logger: $logger, storage: $plain)->export();
         } catch (StorageDown $e) {
             $thrown = $e;
         }
@@ -1059,7 +1055,7 @@ final class ClickHouseOutboxExporterTest
         Assert::same($this->statusOf($inner, 'fresh'), OutboxStatus::Processing);
         // markFailed() works, so the exhausted one is terminated even now.
         Assert::same($this->statusOf($inner, 'spent'), OutboxStatus::Failed);
-        $errors = array_values(array_filter($logger->records, static fn(array $r): bool => $r['level'] === 'error'));
+        $errors = array_values(array_filter($this->logRecords(), static fn(array $r): bool => $r['level'] === 'error'));
         Assert::count($errors, 2);
         Assert::same($errors[0]['message'], 'Failed to release a claimed ClickHouse outbox message');
         Assert::same($errors[0]['context'], [
@@ -1077,7 +1073,7 @@ final class ClickHouseOutboxExporterTest
         $inner->save($this->pending(id: 'a', type: 'ab.exposure', payload: '{"experiment":"x"}'));
         $inner->save($this->pending(id: 'spent', type: 'ab.conversion', payload: '{"experiment":"x","goal":"buy"}', attempts: 3));
 
-        $result = $this->exporter(new RecordingWriterFactory(), storage: $storage)->export();
+        $result = $this->exporter((new Writers())->factory(), storage: $storage)->export();
 
         Assert::same($result->published, 1);
         Assert::same($result->terminalFailed, 1);
@@ -1116,14 +1112,14 @@ final class ClickHouseOutboxExporterTest
             ));
         }
 
-        $factory = $clickHouseDown
-            ? new RecordingWriterFactory(failTables: ['ab_exposures' => new ClickHouseWriteException('down')])
-            : new RecordingWriterFactory();
+        $writers = $clickHouseDown
+            ? new Writers(failTables: ['ab_exposures' => new ClickHouseWriteException('down')])
+            : new Writers();
 
         $aborted = false;
 
         try {
-            $this->exporter($factory, storage: $storage)->export();
+            $this->exporter($writers->factory(), storage: $storage)->export();
         } catch (StorageDown) {
             $aborted = true;
         }

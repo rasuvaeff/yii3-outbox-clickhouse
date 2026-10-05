@@ -16,8 +16,7 @@ use Rasuvaeff\Yii3OutboxClickHouse\ClickHouseWriterFactoryInterface;
 use Rasuvaeff\Yii3OutboxClickHouse\Console\ExportClickHouseOutboxCommand;
 use Rasuvaeff\Yii3OutboxClickHouse\Console\GracefulStop;
 use Rasuvaeff\Yii3OutboxClickHouse\MapClickHouseMessageRouter;
-use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\HookedWriterFactory;
-use Rasuvaeff\Yii3OutboxClickHouse\Tests\Double\RecordingWriterFactory;
+use Rasuvaeff\Yii3OutboxClickHouse\Tests\Support\Writers;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
 use Testo\Assert;
@@ -44,7 +43,7 @@ final class ExportClickHouseOutboxCommandTest
         $this->storage = new InMemoryStorage();
         $this->stop = new GracefulStop();
         $this->slept = [];
-        $this->tester = $this->tester(new RecordingWriterFactory());
+        $this->tester = $this->tester((new Writers())->factory());
     }
 
     /**
@@ -189,7 +188,7 @@ final class ExportClickHouseOutboxCommandTest
     public function terminalFailuresStillExitZeroByDefault(): void
     {
         $this->seed(1);
-        $tester = $this->tester(new RecordingWriterFactory(['t' => new ClickHouseWriteException('down')]), maxAttempts: 1);
+        $tester = $this->tester((new Writers(['t' => new ClickHouseWriteException('down')]))->factory(), maxAttempts: 1);
 
         Assert::same($tester->execute(['--max-iterations' => '1']), Command::SUCCESS);
         Assert::true(str_contains($tester->getDisplay(), 'terminalFailed=1'));
@@ -198,7 +197,7 @@ final class ExportClickHouseOutboxCommandTest
     public function failOnErrorExitsNonZeroWhenABatchTerminatedAMessage(): void
     {
         $this->seed(1);
-        $tester = $this->tester(new RecordingWriterFactory(['t' => new ClickHouseWriteException('down')]), maxAttempts: 1);
+        $tester = $this->tester((new Writers(['t' => new ClickHouseWriteException('down')]))->factory(), maxAttempts: 1);
 
         Assert::same($tester->execute(['--max-iterations' => '1', '--fail-on-error' => true]), Command::FAILURE);
     }
@@ -208,7 +207,7 @@ final class ExportClickHouseOutboxCommandTest
         // Batch 1 terminates m1 (attempts spent on the outage), batch 2 is
         // empty: the last result is clean, the run was not.
         $this->seed(1);
-        $tester = $this->tester(new RecordingWriterFactory(['t' => new ClickHouseWriteException('down')]), maxAttempts: 1);
+        $tester = $this->tester((new Writers(['t' => new ClickHouseWriteException('down')]))->factory(), maxAttempts: 1);
 
         Assert::same($tester->execute(['--max-iterations' => '2', '--fail-on-error' => true]), Command::FAILURE);
         Assert::true(str_contains($tester->getDisplay(), 'terminalFailed=0'));
@@ -217,7 +216,7 @@ final class ExportClickHouseOutboxCommandTest
     public function failOnErrorIgnoresRetriesAndExitsZeroOnACleanRun(): void
     {
         $this->seed(2);
-        $tester = $this->tester(new RecordingWriterFactory(['t' => new ClickHouseWriteException('down')]), maxAttempts: 3);
+        $tester = $this->tester((new Writers(['t' => new ClickHouseWriteException('down')]))->factory(), maxAttempts: 3);
 
         // Two retries scheduled, nothing terminated: a ClickHouse outage is
         // not an error of this run.
@@ -225,7 +224,7 @@ final class ExportClickHouseOutboxCommandTest
 
         $this->storage = new InMemoryStorage();
         $this->seed(1);
-        $clean = $this->tester(new RecordingWriterFactory());
+        $clean = $this->tester((new Writers())->factory());
 
         Assert::same($clean->execute(['--max-iterations' => '1', '--fail-on-error' => true]), Command::SUCCESS);
     }
@@ -233,13 +232,13 @@ final class ExportClickHouseOutboxCommandTest
     public function failOnErrorAppliesToOnceAsWell(): void
     {
         $this->seed(1);
-        $tester = $this->tester(new RecordingWriterFactory(['t' => new ClickHouseWriteException('down')]), maxAttempts: 1);
+        $tester = $this->tester((new Writers(['t' => new ClickHouseWriteException('down')]))->factory(), maxAttempts: 1);
 
         Assert::same($tester->execute(['--once' => true, '--fail-on-error' => true]), Command::FAILURE);
 
         $this->storage = new InMemoryStorage();
         $this->seed(1);
-        $clean = $this->tester(new RecordingWriterFactory());
+        $clean = $this->tester((new Writers())->factory());
 
         Assert::same($clean->execute(['--once' => true, '--fail-on-error' => true]), Command::SUCCESS);
         Assert::same($clean->execute(['--once' => true]), Command::SUCCESS);
@@ -251,11 +250,11 @@ final class ExportClickHouseOutboxCommandTest
     {
         $this->seed(3);
         // The "signal" arrives while the second batch is being written.
-        $tester = $this->tester(new HookedWriterFactory(function (int $call): void {
+        $tester = $this->tester((new Writers(onCreate: function (int $call): void {
             if ($call === 2) {
                 $this->stop->request();
             }
-        }));
+        }))->factory());
 
         $exit = $tester->execute([]);
 
@@ -302,7 +301,7 @@ final class ExportClickHouseOutboxCommandTest
     public function sleepsOneSecondAtATimeBetweenBatches(): void
     {
         $this->seed(1);
-        $tester = $this->tester(new RecordingWriterFactory(), idleSleepSeconds: 3, busySleepSeconds: 2);
+        $tester = $this->tester((new Writers())->factory(), idleSleepSeconds: 3, busySleepSeconds: 2);
 
         $tester->execute(['--max-iterations' => '3']);
 
@@ -316,7 +315,7 @@ final class ExportClickHouseOutboxCommandTest
         $this->seed(1);
         $sleeps = 0;
         $tester = $this->tester(
-            new RecordingWriterFactory(),
+            (new Writers())->factory(),
             idleSleepSeconds: 5,
             busySleepSeconds: 5,
             sleep: function (int $seconds) use (&$sleeps): void {
