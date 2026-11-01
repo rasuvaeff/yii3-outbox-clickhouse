@@ -343,4 +343,32 @@ final class ExportClickHouseOutboxCommandTest
 
         Assert::same($this->slept, []);
     }
+
+    public function theDefaultSleeperReallySleeps(): void
+    {
+        $this->seed(1);
+        $exporter = new ClickHouseOutboxExporter(
+            storage: $this->storage,
+            router: new MapClickHouseMessageRouter(routes: ['ab.exposure' => ['table' => 't', 'columns' => ['event_id', 'experiment']]]),
+            retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 30),
+            clock: new class implements ClockInterface {
+                public function now(): \DateTimeImmutable
+                {
+                    return new \DateTimeImmutable('2026-06-11 12:10:00');
+                }
+            },
+            writerFactory: (new Writers())->factory(),
+            fetchLimit: 1,
+        );
+        $tester = new CommandTester(new ExportClickHouseOutboxCommand(
+            new ClickHouseOutboxExportRunner($exporter, idleSleepSeconds: 1, busySleepSeconds: 1),
+            $this->stop,
+        ));
+
+        $start = hrtime(as_number: true);
+        $tester->execute(['--max-iterations' => '2']);
+        $elapsedSeconds = (hrtime(as_number: true) - $start) / 1_000_000_000;
+
+        Assert::true($elapsedSeconds >= 0.9);
+    }
 }
