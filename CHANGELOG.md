@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Mutation testing now counts uncovered code (`composer mutation` runs
+  `infection --with-uncovered`); template `PublicVisibility` / signature-default
+  ignore settings applied. Tests added for the exact route-map error message, `ClickHouseExportResult::hasTerminalFailures()`, the default real sleeper of the export command and SIGTERM/SIGINT delivery in `GracefulStop`. No `src/` changes.
+
 ## 1.6.1 — 2026-09-18
 
 ### Fixed

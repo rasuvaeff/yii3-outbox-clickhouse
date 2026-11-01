@@ -35,9 +35,11 @@ final class MapClickHouseMessageRouterTest
         // "every type": the exporter would drain the whole outbox — other
         // consumers' messages included — and terminally fail each one.
         Expect::exception(InvalidArgumentException::class)
-            ->withMessageContaining('ClickHouse route map must not be empty')
-            ->withMessageContaining('would claim every message in the outbox')
-            ->withMessageContaining('terminally fail each one for having no route');
+            ->withMessage(
+                'ClickHouse route map must not be empty: handledTypes() would return no types, '
+                . 'the exporter would claim every message in the outbox — including those meant for '
+                . 'other consumers — and terminally fail each one for having no route',
+            );
 
         new MapClickHouseMessageRouter(routes: []);
     }

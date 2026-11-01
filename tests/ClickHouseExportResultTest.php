@@ -68,4 +68,13 @@ final class ClickHouseExportResultTest
 
         Assert::true($result->hasFailures());
     }
+
+    public function hasTerminalFailuresOnlyWhenAMessageGaveUp(): void
+    {
+        $clean = new ClickHouseExportResult(published: 1, retryScheduled: 2, terminalFailed: 0, skipped: 0, groups: []);
+        $failed = new ClickHouseExportResult(published: 0, retryScheduled: 0, terminalFailed: 1, skipped: 0, groups: []);
+
+        Assert::false($clean->hasTerminalFailures());
+        Assert::true($failed->hasTerminalFailures());
+    }
 }
