@@ -70,7 +70,7 @@ final class ExportClickHouseOutboxCommand extends Command
     #[\Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $maxIterationsOption = $input->getOption('max-iterations');
+        $maxIterationsOption = $input->getOptions()['max-iterations'] ?? null;
 
         if (!is_string($maxIterationsOption) || preg_match('/^\d+\z/', $maxIterationsOption) !== 1) {
             return $this->rejectMaxIterations($output);
